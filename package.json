@@ -1,0 +1,27 @@
+{
+  "name": "tensorcash-web-wallet",
+  "private": true,
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rHuhui/TensorCashWebWallet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rHuhui/TensorCashWebWallet/issues"
+  },
+  "homepage": "https://github.com/rHuhui/TensorCashWebWallet#readme",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm --workspace web run dev",
+    "build": "npm --workspace web run build",
+    "preview": "npm --workspace web run preview",
+    "test": "npm --workspace web run test",
+    "typecheck": "npm --workspace web run typecheck"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
