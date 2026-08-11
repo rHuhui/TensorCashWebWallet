@@ -1,13 +1,14 @@
 import { HDKey } from '@scure/bip32';
-import { bech32 } from '@scure/base';
+import { bech32, bech32m } from '@scure/base';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import initSqlJs from 'sql.js/dist/sql-asm.js';
 import { describe, expect, it } from 'vitest';
-import { base64ToBytes, bytesToHex } from './bytes';
+import { base64ToBytes, bytesToHex, hexToBytes } from './bytes';
 import {
   advanceQtReceiveAddress,
   advanceQtReceiveAddressCount,
+  bip341OutputKey,
   createQtWalletMaterial,
   ensureQtReceiveRequestRecords,
   inspectQtWallet,
@@ -224,6 +225,12 @@ async function hardenedQtFixture(): Promise<{ file: Uint8Array; address: string 
 }
 
 describe('TensorCash Qt descriptor wallet compatibility', () => {
+  it('applies the BIP341 tweak from the published BIP86 vector', () => {
+    const internalKey = hexToBytes('cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115');
+    const expected = bech32m.decode('bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr', 90);
+    expect(bip341OutputKey(internalKey)).toEqual(Uint8Array.from(bech32m.fromWords(expected.words.slice(1))));
+  });
+
   it('detects, imports and preserves an unencrypted Qt wallet byte-for-byte', async () => {
     const sample = await unencryptedFixture();
     const inspection = await inspectQtWallet(sample.file);

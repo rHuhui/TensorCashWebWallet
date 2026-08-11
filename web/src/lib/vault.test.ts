@@ -44,16 +44,17 @@ describe('encrypted wallet vault', () => {
     expect(await decryptWallet(vault, 'a secure test password')).toEqual(source);
   }, 30_000);
 
-  it('accepts six-character passwords and rejects shorter passwords', async () => {
+  it('requires 12 characters for new wallets while retaining legacy recovery', async () => {
     const vault = await encryptWallet(material(), '123456', {
       memoryKiB: 32_768,
       iterations: 2,
+      allowLegacyPassword: true,
     });
     expect((await decryptWallet(vault, '123456')).walletId).toBe(material().walletId);
-    await expect(encryptWallet(material(), '12345', {
+    await expect(encryptWallet(material(), '12345678901', {
       memoryKiB: 32_768,
       iterations: 2,
-    })).rejects.toThrow('at least 6 characters');
+    })).rejects.toThrow('at least 12 characters');
   }, 30_000);
 
   it('authenticates public metadata and rejects tampering', async () => {

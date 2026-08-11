@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+import ipaddress
 import re
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Any
@@ -19,8 +21,39 @@ ADDRESS_RE = re.compile(r"^tc1[02-9ac-hj-np-z]{20,100}$", re.IGNORECASE)
 TX_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 SATOSHIS = Decimal(100_000_000)
 MAX_WALLET_ADDRESSES = 200
-MAX_MEMPOOL_TRANSACTIONS = 1_000
 MEMPOOL_CACHE_SECONDS = 30
+
+
+class _TokenBucket:
+    """Small in-process limiter for expensive anonymous read endpoints."""
+
+    def __init__(self, rate: float, burst: int):
+        self.rate = rate
+        self.burst = float(burst)
+        self._lock = threading.Lock()
+        self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
+        self._checks = 0
+
+    def allow(self, client: str, endpoint: str) -> bool:
+        now = time.monotonic()
+        key = (client, endpoint)
+        with self._lock:
+            tokens, updated = self._buckets.get(key, (self.burst, now))
+            tokens = min(self.burst, tokens + max(0.0, now - updated) * self.rate)
+            allowed = tokens >= 1.0
+            self._buckets[key] = (tokens - 1.0 if allowed else tokens, now)
+            self._checks += 1
+            if self._checks % 256 == 0:
+                cutoff = now - max(300.0, self.burst / self.rate * 4)
+                self._buckets = {
+                    bucket_key: value for bucket_key, value in self._buckets.items()
+                    if value[1] >= cutoff
+                }
+            return allowed
+
+
+class _WalletQueryLimit(RuntimeError):
+    pass
 
 
 def _sats(value: Any) -> int:
@@ -41,6 +74,31 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
     app.json.sort_keys = False
     mempool_cache: dict[str, Any] = {"at": 0.0, "transactions": []}
     mempool_cache_lock = threading.Lock()
+    expensive_request_limiter = _TokenBucket(cfg.public_read_rate, cfg.public_read_burst)
+
+    def core_batch_chunked(calls: Any) -> list[Any]:
+        pending = list(calls)
+        results: list[Any] = []
+        for offset in range(0, len(pending), cfg.rpc_batch_size):
+            results.extend(core.batch(pending[offset:offset + cfg.rpc_batch_size]))
+        return results
+
+    def client_address() -> str:
+        direct = request.remote_addr or "unknown"
+        try:
+            direct_ip = ipaddress.ip_address(direct)
+        except ValueError:
+            return "unknown"
+        # The production gateway is loopback-only behind Nginx. Trust one
+        # sanitized X-Real-IP hop only in that topology; public direct callers
+        # cannot spoof the limiter identity.
+        if direct_ip.is_loopback:
+            forwarded = request.headers.get("X-Real-IP", "").strip()
+            try:
+                return str(ipaddress.ip_address(forwarded)) if forwarded else str(direct_ip)
+            except ValueError:
+                return str(direct_ip)
+        return str(direct_ip)
 
     def database() -> sqlite3.Connection:
         path = Path(cfg.index_db)
@@ -121,9 +179,9 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     entries.items(),
                     key=lambda item: int((item[1] or {}).get("time", 0)),
                     reverse=True,
-                )[:MAX_MEMPOOL_TRANSACTIONS]
+                )[:cfg.mempool_transaction_limit]
                 txids = [txid for txid, _entry in ordered]
-                decoded = core.batch(("getrawtransaction", [txid, True]) for txid in txids)
+                decoded = core_batch_chunked(("getrawtransaction", [txid, True]) for txid in txids)
             except RPCError:
                 return list(mempool_cache["transactions"])
 
@@ -262,6 +320,18 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 abort(403)
             if request.mimetype != "application/json":
                 return json_error(415, "json_required", "Content-Type must be application/json")
+        expensive_endpoints = {
+            "wallet_overview",
+            "wallet_utxos",
+            "address_utxos",
+            "test_transaction",
+            "broadcast_transaction",
+        }
+        if request.endpoint in expensive_endpoints:
+            if not expensive_request_limiter.allow(client_address(), str(request.endpoint)):
+                response = json_error(429, "rate_limited", "Too many expensive wallet requests; retry shortly")
+                response[0].headers["Retry-After"] = "1"
+                return response
         return None
 
     @app.errorhandler(RPCError)
@@ -274,16 +344,24 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         app.logger.warning("Explorer database query failed: %s", type(exc).__name__)
         return json_error(503, "index_unavailable", "The chain index is temporarily unavailable")
 
+    @app.errorhandler(_WalletQueryLimit)
+    def wallet_query_limit(_exc: _WalletQueryLimit):
+        return json_error(
+            422,
+            "wallet_utxo_limit",
+            "This wallet has too many UTXO candidates for the public gateway safety limit",
+        )
+
     @app.get("/healthz")
     @app.get("/api/v1/status")
     def status():
-        with database() as connection:
+        with closing(database()) as connection:
             return jsonify({"status": chain_status(connection), "custody": "none"})
 
     @app.get("/api/v1/address/<address>/summary")
     def address_summary(address: str):
         address = checked_address(address)
-        with database() as connection:
+        with closing(database()) as connection:
             row = connection.execute(
                 "SELECT * FROM addresses WHERE address = ?", (address,)
             ).fetchone()
@@ -305,12 +383,14 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
     def address_transactions(address: str):
         address = checked_address(address)
         try:
-            page = max(1, int(request.args.get("page", "1")))
+            page = int(request.args.get("page", "1"))
             page_size = min(100, max(1, int(request.args.get("page_size", "25"))))
         except ValueError:
             return json_error(400, "invalid_pagination", "Pagination values must be integers")
+        if page < 1 or page > cfg.max_page:
+            return json_error(400, "invalid_pagination", f"page must be between 1 and {cfg.max_page}")
         offset = (page - 1) * page_size
-        with database() as connection:
+        with closing(database()) as connection:
             total = connection.execute(
                 "SELECT COUNT(*) FROM address_transactions WHERE address = ?", (address,)
             ).fetchone()[0]
@@ -350,13 +430,15 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         if not isinstance(include_pending, bool):
             return json_error(400, "invalid_pending_option", "include_pending must be a boolean")
         try:
-            page = max(1, int(body.get("page", 1)))
+            page = int(body.get("page", 1))
             page_size = min(100, max(1, int(body.get("page_size", 25))))
         except (TypeError, ValueError):
             return json_error(400, "invalid_pagination", "Pagination values must be integers")
+        if page < 1 or page > cfg.max_page:
+            return json_error(400, "invalid_pagination", f"page must be between 1 and {cfg.max_page}")
         placeholders = ",".join("?" for _ in addresses)
         offset = (page - 1) * page_size
-        with database() as connection:
+        with closing(database()) as connection:
             if include_pending:
                 pending, pending_received, pending_sent = wallet_pending(connection, addresses)
             else:
@@ -439,7 +521,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
     @app.get("/api/v1/address/<address>/utxos")
     def address_utxos(address: str):
         address = checked_address(address)
-        with database() as connection:
+        with closing(database()) as connection:
             utxos = verified_wallet_utxos(connection, [address])
             return jsonify({"status": chain_status(connection), "utxos": utxos})
 
@@ -459,12 +541,14 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             JOIN transactions AS tx ON tx.txid = out.txid
             WHERE out.address IN ({placeholders}) AND out.spent_by_txid IS NULL
             ORDER BY tx.block_height, out.txid, out.vout_index
-            LIMIT 2000
+            LIMIT ?
             """,
-            (*addresses, *addresses),
+            (*addresses, *addresses, cfg.utxo_candidate_limit + 1),
         ).fetchall()
+        if len(candidates) > cfg.utxo_candidate_limit:
+            raise _WalletQueryLimit()
         tip = int(connection.execute("SELECT COALESCE(MAX(height), -1) FROM blocks").fetchone()[0])
-        results = core.batch(
+        results = core_batch_chunked(
             ("gettxout", [row["txid"], row["vout_index"], True]) for row in candidates
         )
         utxos = []
@@ -515,7 +599,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         if not isinstance(body, dict):
             return json_error(400, "invalid_wallet_query", "A JSON wallet query is required")
         addresses = checked_wallet_addresses(body.get("addresses"))
-        with database() as connection:
+        with closing(database()) as connection:
             return jsonify({
                 "status": chain_status(connection),
                 "utxos": verified_wallet_utxos(connection, addresses),
@@ -564,8 +648,10 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         if not isinstance(transaction, str):
             return transaction
         test = core.call("testmempoolaccept", [[transaction]])
-        if not isinstance(test, list) or len(test) != 1 or not test[0].get("allowed"):
-            reason = test[0].get("reject-reason", "Transaction was rejected") if test else "Transaction was rejected"
+        if not isinstance(test, list) or len(test) != 1 or not isinstance(test[0], dict):
+            return json_error(503, "invalid_core_response", "Core returned an invalid result")
+        if not test[0].get("allowed"):
+            reason = test[0].get("reject-reason", "Transaction was rejected")
             return json_error(422, "mempool_rejected", str(reason)[:240])
         txid = core.call("sendrawtransaction", [transaction])
         if not isinstance(txid, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", txid):

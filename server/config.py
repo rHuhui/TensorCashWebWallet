@@ -19,6 +19,12 @@ class Settings:
     allowed_origins: tuple[str, ...]
     request_timeout: float = 8.0
     max_transaction_bytes: int = 500_000
+    rpc_batch_size: int = 50
+    utxo_candidate_limit: int = 500
+    mempool_transaction_limit: int = 500
+    public_read_rate: float = 2.0
+    public_read_burst: int = 12
+    max_page: int = 10_000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,4 +46,10 @@ class Settings:
                 os.getenv("TSCWALLET_ALLOWED_ORIGINS", "http://127.0.0.1:5173")
             ),
             request_timeout=float(os.getenv("TSCWALLET_RPC_TIMEOUT", "8")),
+            rpc_batch_size=max(1, min(100, int(os.getenv("TSCWALLET_RPC_BATCH_SIZE", "50")))),
+            utxo_candidate_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_UTXO_CANDIDATE_LIMIT", "500")))),
+            mempool_transaction_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_MEMPOOL_LIMIT", "500")))),
+            public_read_rate=max(0.1, float(os.getenv("TSCWALLET_PUBLIC_READ_RATE", "2"))),
+            public_read_burst=max(2, int(os.getenv("TSCWALLET_PUBLIC_READ_BURST", "12"))),
+            max_page=max(1, min(100_000, int(os.getenv("TSCWALLET_MAX_PAGE", "10000")))),
         )

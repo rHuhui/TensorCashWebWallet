@@ -15,9 +15,13 @@ export function hexToBytes(hex: string): Uint8Array {
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
+  // Avoid quadratic string concatenation for multi-megabyte Core wallet.dat
+  // files. 32 KiB also stays below browser argument-count limits.
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32_768)));
+  }
+  return btoa(chunks.join(''));
 }
 
 export function base64ToBytes(value: string): Uint8Array {

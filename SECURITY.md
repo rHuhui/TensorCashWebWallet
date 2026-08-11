@@ -6,7 +6,8 @@ TensorCash Web Wallet handles signing keys in a hostile environment: a general-p
 
 | Version | Security fixes |
 | --- | --- |
-| 1.0.x | Supported |
+| 1.0.1 and later 1.0.x releases | Supported |
+| 1.0.0 | Upgrade required |
 | Pre-1.0 development builds | Not supported |
 
 Security fixes are applied to the latest supported patch release. If a vulnerability requires a compatibility break, the release notes will identify the affected backup/API versions and migration path.
@@ -69,13 +70,18 @@ Third-party browsers, extensions, operating systems, DNS/registrars, certificate
 ### Frontend delivery
 
 - Serve only the reviewed `web/dist/` output from an immutable versioned release directory.
-- Enforce the reference CSP as an HTTP response header. `frame-ancestors` in an HTML meta element is not sufficient.
+- Enforce the reference CSP as an HTTP response header. `frame-ancestors` in an HTML meta element is not sufficient. Production `connect-src` must contain only `'self'` and any exact, reviewed gateway origins compiled for that build—never `https:`, `http:`, `*`, or loopback development sources.
 - Keep source maps disabled in production, reject dotfiles, set a request body limit, and rate-limit the API at Nginx.
+- Keep the gateway's per-IP token bucket enabled for wallet/mempool reads,
+  UTXO verification, policy testing and broadcast attempts. Preserve bounded
+  address pagination, bounded candidate scans, chunked Core batch calls and the
+  explicit over-limit error; do not replace those limits with unbounded address
+  expansion.
 - Treat control of DNS, TLS private keys, Nginx, the static release directory, the GitHub release/tag, and dependency publishing accounts as equivalent to control of users' unlocked wallets.
 
 ## Passwords, storage, and backups
 
-The browser vault derives an AES-256-GCM key with Argon2id. Each encryption uses a random salt and IV; authenticated public metadata is bound as AES-GCM additional data. IndexedDB stores ciphertext, KDF/cipher parameters, and authenticated public metadata. A strong, unique password is still essential because an attacker who copies the vault can attempt guesses offline.
+The browser vault derives an AES-256-GCM key with Argon2id. Each encryption uses a random salt and IV; authenticated public metadata is bound as AES-GCM additional data. IndexedDB stores ciphertext, KDF/cipher parameters, and authenticated public metadata. New vaults require at least 12 characters. Existing authenticated 6–11 character vaults remain readable for migration, but should be replaced with a strong, unique password because an attacker who copies the vault can attempt guesses offline.
 
 Qt wallet files are parsed in the browser. Imported descriptor keys and the original wallet bytes reside inside the encrypted local vault. Export preserves the Qt wallet's original encryption state; an originally unencrypted Qt file therefore remains plaintext key material. Export may update descriptor counters and standard receive metadata as addresses are issued.
 

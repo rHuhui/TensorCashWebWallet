@@ -14,9 +14,11 @@ export interface VaultOptions {
   memoryKiB?: number;
   iterations?: number;
   parallelism?: number;
+  /** Only for re-encrypting an already authenticated v1.0.0 vault. */
+  allowLegacyPassword?: boolean;
 }
 
-const DEFAULTS: Required<VaultOptions> = {
+const DEFAULTS: Required<Pick<VaultOptions, 'memoryKiB' | 'iterations' | 'parallelism'>> = {
   memoryKiB: 65_536,
   iterations: 3,
   parallelism: 1,
@@ -45,9 +47,9 @@ function canonicalMetadata(vault: Omit<EncryptedVault, 'ciphertext'>): Uint8Arra
   );
 }
 
-function validatePassword(password: string): Uint8Array {
+function validatePassword(password: string, minimumLength: number): Uint8Array {
   const normalized = password.normalize('NFKC');
-  if (normalized.length < 6) throw new Error('Use a password with at least 6 characters');
+  if (normalized.length < minimumLength) throw new Error(`Use a password with at least ${minimumLength} characters`);
   return encoder.encode(normalized);
 }
 
@@ -72,7 +74,7 @@ async function deriveKey(password: Uint8Array, kdf: VaultKdf): Promise<Uint8Arra
 }
 
 function validateMaterial(material: WalletMaterial): void {
-  const commonValid =
+  const commonInvalid =
     material.schema !== 'org.tensorcash.webwallet.material' ||
     material.version !== 1 ||
     material.network !== 'mainnet' ||
@@ -83,7 +85,7 @@ function validateMaterial(material: WalletMaterial): void {
       material.key.descriptors.length > 0 &&
       material.qt.addresses.length > 0 &&
       Boolean(material.qt.originalFileBase64);
-  if (commonValid || !keyValid) {
+  if (commonInvalid || !keyValid) {
     throw new Error('Unsupported or invalid TensorCash wallet material');
   }
 }
@@ -95,7 +97,7 @@ export async function encryptWallet(
   walletName?: string,
 ): Promise<EncryptedVault> {
   validateMaterial(material);
-  const passwordBytes = validatePassword(password);
+  const passwordBytes = validatePassword(password, options.allowLegacyPassword ? 6 : 12);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const kdf: VaultKdf = {
@@ -148,7 +150,9 @@ export async function encryptWallet(
 
 export async function decryptWallet(vault: EncryptedVault, password: string): Promise<WalletMaterial> {
   validateVault(vault);
-  const passwordBytes = validatePassword(password);
+  // v1.0.0 allowed six-character passwords. Existing vaults must remain
+  // recoverable even though all newly encrypted vaults require 12 characters.
+  const passwordBytes = validatePassword(password, 6);
   const keyBytes = await deriveKey(passwordBytes, vault.kdf);
   const iv = base64ToBytes(vault.cipher.iv);
   try {

@@ -4,7 +4,7 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 
@@ -19,7 +19,7 @@ class RPCError(RuntimeError):
 class RPCClient:
     url: str
     user: str
-    password: str
+    password: str = field(repr=False)
     timeout: float
 
     _ALLOWED = frozenset(
@@ -71,6 +71,8 @@ class RPCClient:
             raise RPCError("invalid_response", "TensorCash Core returned an invalid response")
         error = response.get("error")
         if error:
+            if not isinstance(error, dict):
+                raise RPCError("invalid_response", "TensorCash Core returned an invalid RPC error")
             raise RPCError(error.get("code", "rpc_error"), error.get("message", "RPC error"))
         return response.get("result")
 
@@ -95,6 +97,8 @@ class RPCClient:
                 raise RPCError("invalid_response", "TensorCash Core omitted a batch result")
             error = item.get("error")
             if error:
+                if not isinstance(error, dict):
+                    raise RPCError("invalid_response", "TensorCash Core returned an invalid RPC error")
                 raise RPCError(
                     error.get("code", "rpc_error"), error.get("message", "RPC error")
                 )

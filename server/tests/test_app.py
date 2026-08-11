@@ -24,6 +24,7 @@ class FakeRPC:
         self.asset = False
         self.mempool: dict[str, dict] = {}
         self.raw_transactions: dict[str, dict] = {}
+        self.batch_sizes: list[int] = []
 
     def call(self, method, params=None):
         self.calls.append((method, params or []))
@@ -43,6 +44,7 @@ class FakeRPC:
 
     def batch(self, calls):
         calls = list(calls)
+        self.batch_sizes.append(len(calls))
         self.calls.extend(calls)
         if calls and all(method == "getrawtransaction" for method, _params in calls):
             return [self.raw_transactions[params[0]] for _method, params in calls]
@@ -123,6 +125,7 @@ def wallet_app(tmp_path: Path):
     )
     app = create_app(settings, rpc)
     app.config.update(TESTING=True)
+    app.config["TEST_DATABASE"] = str(database)
     return app, rpc
 
 
@@ -308,3 +311,112 @@ def test_transaction_hex_is_bounded_and_validated(wallet_app):
     )
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_transaction"
+
+
+def test_malformed_core_preflight_is_a_controlled_503(wallet_app):
+    app, rpc = wallet_app
+    original_call = rpc.call
+
+    def malformed(method, params=None):
+        if method == "testmempoolaccept":
+            return ["not-a-dict"]
+        return original_call(method, params)
+
+    rpc.call = malformed
+    response = app.test_client().post(
+        "/api/v1/transactions/broadcast",
+        json={"signed_tx": "00"},
+        headers={"Origin": "https://wallet.example"},
+    )
+    assert response.status_code == 503
+    assert response.get_json()["error"]["code"] == "invalid_core_response"
+
+
+def test_expensive_public_reads_are_rate_limited_in_application(wallet_app):
+    app, _rpc = wallet_app
+    client = app.test_client()
+    responses = [
+        client.post(
+            "/api/v1/wallet/overview",
+            json={"addresses": [ADDRESS], "include_pending": False},
+            headers={"X-Real-IP": "203.0.113.40"},
+        )
+        for _ in range(13)
+    ]
+    assert all(response.status_code == 200 for response in responses[:12])
+    assert responses[-1].status_code == 429
+    assert responses[-1].headers["Retry-After"] == "1"
+
+
+def test_single_address_utxo_reads_are_also_rate_limited(wallet_app):
+    app, _rpc = wallet_app
+    client = app.test_client()
+    responses = [
+        client.get(
+            f"/api/v1/address/{ADDRESS}/utxos",
+            headers={"X-Real-IP": "203.0.113.43"},
+        )
+        for _ in range(13)
+    ]
+    assert all(response.status_code == 200 for response in responses[:12])
+    assert responses[-1].status_code == 429
+
+
+def test_core_utxo_verification_is_chunked(wallet_app):
+    app, rpc = wallet_app
+    # Exercise the same bounded Core batch helper through a 120-tx mempool.
+    rpc.mempool = {
+        f"{index:064x}": {"time": 1_800_000_000 + index, "fees": {"base": 0.00001}}
+        for index in range(120)
+    }
+    rpc.raw_transactions = {
+        txid: {"vin": [], "vout": []} for txid in rpc.mempool
+    }
+    response = app.test_client().post(
+        "/api/v1/wallet/overview",
+        json={"addresses": [ADDRESS]},
+        headers={"X-Real-IP": "203.0.113.41"},
+    )
+    assert response.status_code == 200
+    assert rpc.batch_sizes[-3:] == [50, 50, 20]
+
+
+def test_utxo_candidate_work_has_a_hard_limit(wallet_app):
+    app, rpc = wallet_app
+    rows = []
+    links = []
+    outputs = []
+    for index in range(501):
+        txid = f"{10_000 + index:064x}"
+        rows.append((txid, BLOCK_HASH))
+        links.append((ADDRESS, txid))
+        outputs.append((txid, ADDRESS, SCRIPT))
+    with sqlite3.connect(app.config["TEST_DATABASE"]) as connection:
+        connection.executemany(
+            "INSERT INTO transactions VALUES(?, 100, ?, 1, 1000, 0)", rows
+        )
+        connection.executemany(
+            "INSERT INTO address_transactions VALUES(?, ?, 100, 1700000000, 125000000, 0, 125000000)",
+            links,
+        )
+        connection.executemany(
+            "INSERT INTO tx_outputs VALUES(?, 0, ?, 125000000, ?, NULL)", outputs
+        )
+    previous_batches = len(rpc.batch_sizes)
+    response = app.test_client().post(
+        "/api/v1/wallet/utxos",
+        json={"addresses": [ADDRESS]},
+        headers={"X-Real-IP": "203.0.113.42"},
+    )
+    assert response.status_code == 422
+    assert response.get_json()["error"]["code"] == "wallet_utxo_limit"
+    assert len(rpc.batch_sizes) == previous_batches
+
+
+def test_pagination_has_a_hard_upper_bound(wallet_app):
+    app, _rpc = wallet_app
+    response = app.test_client().get(
+        f"/api/v1/address/{ADDRESS}/transactions?page=10001"
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_pagination"

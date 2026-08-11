@@ -12,8 +12,8 @@ npm run typecheck
 npm run build
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r server/requirements.txt
-python -m pytest
+python -m pip install -r server/requirements-dev.txt
+python -m pytest server/tests
 ```
 
 Never commit real wallet files, recovery backups, private keys, passwords, RPC

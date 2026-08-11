@@ -4,12 +4,19 @@ import type { WalletUtxo } from './transaction';
 const DEFAULT_GATEWAY = import.meta.env.VITE_WALLET_GATEWAY_URL || 'https://app.tscweb.xyz/wallet';
 const SETTING = 'tensorcash-wallet-gateway';
 
-export function getGatewayUrl(): string {
-  return localStorage.getItem(SETTING) || DEFAULT_GATEWAY;
+function permittedGatewayOrigins(): Set<string> {
+  const configured = String(import.meta.env.VITE_ALLOWED_GATEWAY_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => new URL(value).origin);
+  const defaults = [location.origin, new URL(DEFAULT_GATEWAY, location.href).origin];
+  if (import.meta.env.DEV) defaults.push('http://127.0.0.1:9920');
+  return new Set([...defaults, ...configured]);
 }
 
-export function setGatewayUrl(value: string): string {
-  const url = new URL(value.trim());
+function normalizeGatewayUrl(value: string): string {
+  const url = new URL(value.trim(), location.href);
   if (url.username || url.password || url.search || url.hash) {
     throw new Error('Gateway URL cannot contain credentials, query parameters, or fragments');
   }
@@ -17,7 +24,25 @@ export function setGatewayUrl(value: string): string {
     throw new Error('An HTTPS wallet can only use an HTTPS gateway');
   }
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Unsupported gateway protocol');
-  const normalized = url.toString().replace(/\/$/, '');
+  if (!permittedGatewayOrigins().has(url.origin)) {
+    throw new Error('This gateway origin is not authorized by this wallet build. Self-hosters must add it to VITE_ALLOWED_GATEWAY_ORIGINS and rebuild.');
+  }
+  return url.toString().replace(/\/$/, '');
+}
+
+export function getGatewayUrl(): string {
+  const saved = localStorage.getItem(SETTING);
+  if (!saved) return normalizeGatewayUrl(DEFAULT_GATEWAY);
+  try {
+    return normalizeGatewayUrl(saved);
+  } catch {
+    localStorage.removeItem(SETTING);
+    return normalizeGatewayUrl(DEFAULT_GATEWAY);
+  }
+}
+
+export function setGatewayUrl(value: string): string {
+  const normalized = normalizeGatewayUrl(value);
   localStorage.setItem(SETTING, normalized);
   return normalized;
 }

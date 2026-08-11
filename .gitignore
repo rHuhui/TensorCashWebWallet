@@ -1,7 +1,9 @@
 node_modules/
 dist/
 web/public/vendor/
-deploy/
+deploy/*
+!deploy/examples/
+!deploy/examples/**
 .env
 .env.*
 !.env.example

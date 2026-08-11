@@ -1,7 +1,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bech32 } from '@scure/base';
+import { bech32, bech32m } from '@scure/base';
 import { bytesToHex, compactSize, concatBytes, hexToBytes, wipe } from './bytes';
 
 export const SATOSHIS_PER_TSC = 100_000_000;
@@ -26,8 +26,15 @@ export interface WalletUtxo {
 }
 
 export interface SpendKey {
+  /** Key bytes remain owned by the resolver; the signer copies before use. */
   privateKey: Uint8Array;
   publicKey: Uint8Array;
+}
+
+export interface P2wpkhUtxoPartition {
+  spendable: WalletUtxo[];
+  unsupported: WalletUtxo[];
+  unsupportedValueSats: number;
 }
 
 export interface PlannedInput extends WalletUtxo {
@@ -204,15 +211,53 @@ export function maximumP2wpkhSendAmount(utxos: WalletUtxo[], feeRateSatVb: numbe
   const feeSats = estimatedP2wpkhVsize(available.length, 1) * feeRateSatVb;
   const amountSats = totalSats - feeSats;
   if (!available.length || amountSats < P2WPKH_DUST_SATS) throw new Error('Spendable balance is too small after the network fee');
-  if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS || feeSats > Math.max(10_000, Math.floor(amountSats / 100))) {
+  if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS) {
     throw new Error('Calculated network fee exceeds the wallet safety limit');
   }
   return { amountSats, feeSats, inputCount: available.length };
 }
 
-function checkedUtxos(utxos: WalletUtxo[]): WalletUtxo[] {
+function witnessScript(address: string): Uint8Array {
+  if (address !== address.toLowerCase() && address !== address.toUpperCase()) {
+    throw new Error('TensorCash addresses cannot mix upper and lower case');
+  }
+  const normalized = address.toLowerCase() as `${string}1${string}`;
+  let prefix = '';
+  let words: number[] = [];
+  let encoding: 'bech32' | 'bech32m';
+  try {
+    const decoded = bech32.decode(normalized, 90);
+    prefix = decoded.prefix;
+    words = decoded.words;
+    encoding = 'bech32';
+  } catch {
+    try {
+      const decoded = bech32m.decode(normalized, 90);
+      prefix = decoded.prefix;
+      words = decoded.words;
+      encoding = 'bech32m';
+    } catch {
+      throw new Error('Gateway returned a UTXO with an invalid TensorCash address');
+    }
+  }
+  if (prefix !== 'tc' || words.length < 2) throw new Error('Gateway returned a UTXO with an invalid TensorCash address');
+  const version = words[0];
+  if ((version === 0 && encoding !== 'bech32') || (version > 0 && encoding !== 'bech32m')) {
+    throw new Error('Gateway returned a UTXO with an invalid witness checksum');
+  }
+  const program = Uint8Array.from(bech32.fromWords(words.slice(1)));
+  if (version < 0 || version > 16 || program.length < 2 || program.length > 40 || (version === 0 && ![20, 32].includes(program.length))) {
+    throw new Error('Gateway returned a UTXO with an invalid witness program');
+  }
+  const opcode = version === 0 ? 0 : 0x50 + version;
+  return concatBytes(Uint8Array.of(opcode, program.length), program);
+}
+
+export function partitionP2wpkhUtxos(utxos: WalletUtxo[]): P2wpkhUtxoPartition {
   const seen = new Set<string>();
-  return utxos.map((utxo) => {
+  const spendable: WalletUtxo[] = [];
+  const unsupported: WalletUtxo[] = [];
+  for (const utxo of utxos) {
     const outpoint = `${utxo.txid}:${utxo.vout}`;
     if (seen.has(outpoint)) throw new Error('Gateway returned a duplicate UTXO');
     seen.add(outpoint);
@@ -221,10 +266,32 @@ function checkedUtxos(utxos: WalletUtxo[]): WalletUtxo[] {
     }
     if (!Number.isSafeInteger(utxo.value_sats) || utxo.value_sats <= 0) throw new Error('Gateway returned an invalid UTXO value');
     if (utxo.coinbase && utxo.confirmations < COINBASE_MATURITY) throw new Error('Gateway returned an immature coinbase UTXO');
-    const expectedScript = bytesToHex(p2wpkhScript(utxo.address));
+    const expectedWitnessScript = bytesToHex(witnessScript(utxo.address));
+    const script = utxo.script_pubkey.toLowerCase();
+    if (script !== expectedWitnessScript) throw new Error('UTXO script does not match its wallet address');
+    let expectedScript: string;
+    try {
+      expectedScript = bytesToHex(p2wpkhScript(utxo.address));
+    } catch {
+      unsupported.push({ ...utxo, script_pubkey: script });
+      continue;
+    }
     if (utxo.script_pubkey.toLowerCase() !== expectedScript) throw new Error('UTXO script does not match its wallet address');
-    return { ...utxo, script_pubkey: expectedScript };
-  });
+    spendable.push({ ...utxo, script_pubkey: expectedScript });
+  }
+  return {
+    spendable,
+    unsupported,
+    unsupportedValueSats: unsupported.reduce((sum, utxo) => sum + utxo.value_sats, 0),
+  };
+}
+
+function checkedUtxos(utxos: WalletUtxo[]): WalletUtxo[] {
+  return partitionP2wpkhUtxos(utxos).spendable;
+}
+
+export function requiresHighFeeConfirmation(plan: Pick<TransactionPlan, 'feeSats' | 'amountSats'>): boolean {
+  return plan.feeSats > Math.max(10_000, Math.floor(plan.amountSats / 100));
 }
 
 export function planP2wpkhTransaction(
@@ -268,7 +335,7 @@ export function planP2wpkhTransaction(
     }
   }
   if (!outputCount) throw new Error('Insufficient confirmed spendable balance');
-  if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS || feeSats > Math.max(10_000, Math.floor(amountSats / 100))) {
+  if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS) {
     throw new Error('Calculated network fee exceeds the wallet safety limit');
   }
   const outputs: PlannedOutput[] = [{ address: recipient.toLowerCase(), valueSats: amountSats, scriptPubKey: recipientScript, change: false }];
@@ -315,7 +382,11 @@ export function signP2wpkhTransaction(plan: TransactionPlan, resolveKey: (addres
   const ephemeral: Uint8Array[] = [];
   try {
     plan.inputs.forEach((input, index) => {
-      const key = resolveKey(input.address);
+      const resolvedKey = resolveKey(input.address);
+      const key = {
+        privateKey: Uint8Array.from(resolvedKey.privateKey),
+        publicKey: Uint8Array.from(resolvedKey.publicKey),
+      };
       ephemeral.push(key.privateKey, key.publicKey);
       if (key.privateKey.length !== 32 || key.publicKey.length !== 33) throw new Error('Wallet returned an invalid spend key');
       const expectedProgram = decodeP2wpkhAddress(input.address);

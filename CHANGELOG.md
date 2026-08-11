@@ -3,6 +3,51 @@
 All notable changes to TensorCash Web Wallet are documented here. Releases use
 [Semantic Versioning](https://semver.org/) and Git tags use the `v` prefix.
 
+## [1.0.1] - 2026-08-12
+
+Security and correctness patch following the independent 11 August 2026 review.
+
+### Fixed
+
+- Apply the BIP341 TapTweak to Core `tr()` descriptor receive addresses, with
+  the published BIP86 vector as a regression test.
+- Exclude valid unsupported Taproot/ML-DSA outputs from P2WPKH coin selection
+  without disabling spendable P2WPKH funds, and show the excluded amount.
+- Disable Send up front for receive/watch-only ML-DSA wallets and clarify the
+  current capability scope.
+- Reserve a fresh internal descriptor address for change and persist the
+  advanced counter before broadcast.
+- Convert percentage-based high fees from a hard failure into an explicit user
+  confirmation while retaining the absolute fee ceiling.
+- Require 12-character passwords for new encryption, add strength guidance and
+  retain read/migration compatibility for six-character v1.0.0 vaults.
+- Ignore and visibly report isolated malformed IndexedDB wallet records rather
+  than hiding every healthy wallet.
+- Remove unnecessary five-minute React retention of decrypted wallet material.
+- Correct malformed Core RPC/preflight response handling, pagination limits,
+  SQLite connection lifetime and RPC credential representation.
+
+### Security
+
+- Restrict production `connect-src` to same-origin plus exact build-time gateway
+  origins; development loopback permissions no longer ship in production.
+- Add gateway per-IP token-bucket limiting, 50-call Core RPC chunks, a 500-UTXO
+  candidate ceiling and a 500-transaction mempool decode ceiling.
+- Pin BIP32/SQLite dependencies exactly and verify the vendored ML-DSA runtime
+  against SHA-256 `7b13b733ba96c1a36d79e4f31175b53d6a962bf8119452ab5ef48dae2db11b83`.
+- Split test dependencies from runtime requirements and publish sanitized
+  loopback-only Nginx/systemd deployment references.
+
+### Compatibility
+
+- Existing v1.0.0 encrypted Web Wallet backups, including six-character legacy
+  passwords, remain decryptable. New or newly imported wallets require 12+
+  characters.
+- Key-path `tr(KEY)` receive descriptors use BIP341. `rawtr()` and tapscript-tree
+  `tr(KEY,TREE)` descriptors are rejected rather than derived incompletely.
+- Target TensorCash Core version: v1.1.0. ML-DSA remains import-only and
+  receive/watch-only in this release.
+
 ## [1.0.0] - 2026-08-11
 
 First public release candidate.

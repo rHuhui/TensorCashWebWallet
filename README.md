@@ -1,10 +1,15 @@
 # TensorCash Web Wallet
 
-TensorCash Web Wallet v1.0.0 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
+TensorCash Web Wallet v1.0.1 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
 
 Source repository: [github.com/rHuhui/TensorCashWebWallet](https://github.com/rHuhui/TensorCashWebWallet)
 
-> **Security notice:** v1.0.0 is the first public release. Use small amounts until its ML-DSA/address and transaction vectors have been independently reviewed against the deployed TensorCash Core version. A compromised web origin, browser, extension, or operating system can steal unlocked wallet material.
+> **Security notice:** v1.0.1 remediates the findings in the independent 11 August 2026 review, including the BIP341 Taproot derivation defect. The review is not a certification. Use small amounts until restore and spend vectors have also been independently exercised against the deployed TensorCash Core build. A compromised web origin, browser, extension, or operating system can steal unlocked wallet material.
+
+The public repository is maintained and released by **rHuhui**. Some public Git
+metadata records authorised AI-assisted development tool identities; those
+authors worked on behalf of the maintainer and do not represent a second owner
+or release authority.
 
 ## What it does
 
@@ -14,6 +19,13 @@ Source repository: [github.com/rHuhui/TensorCashWebWallet](https://github.com/rH
 - Reads balances, history, fees, and spendable outputs through a stateless gateway.
 - Builds, checks, and signs transactions in the browser; only signed transaction hex is relayed.
 - Re-verifies indexed UTXOs through TensorCash Core and excludes native-asset outputs from ordinary TSC coin selection.
+- Supports imported ML-DSA wallets for receive/watch-only use. v1.0.1 does not
+  create or sign ML-DSA spends, and the Send action is disabled up front for
+  wallets without a supported P2WPKH spend path.
+
+There is **no 12-word seed phrase**. Recovery requires the exported `.dat` or
+Web Wallet backup and its password. The server cannot reset the password or
+recover a lost wallet.
 
 The gateway has no user accounts and is not a database for wallet data. It transiently receives public addresses for balance/history requests and signed transaction hex for test/broadcast requests. It never needs a wallet password, private key, descriptor, recovery backup, or decrypted vault.
 
@@ -23,6 +35,7 @@ The gateway has no user accounts and is not a database for wallet data. It trans
 - `server/` — Flask/Gunicorn read-and-broadcast gateway.
 - `docs/ARCHITECTURE.md` — components, data flows, API boundary, and deployment topology.
 - `docs/THREAT_MODEL.md` — trust assumptions, mitigations, and residual risks.
+- `docs/EXTERNAL_REVIEW_REMEDIATION_1.0.1.md` — finding-by-finding remediation record for the 2026-08-11 external review.
 - `SECURITY.md` — vulnerability reporting and production security requirements.
 - `CONTRIBUTING.md` — contribution and pre-submission checks.
 - `CHANGELOG.md` — user-visible changes for each SemVer release.
@@ -42,7 +55,7 @@ See [Architecture](docs/ARCHITECTURE.md) and [Threat model](docs/THREAT_MODEL.md
 ## Requirements
 
 - Node.js 22 or newer and npm with lockfile support.
-- Python 3.11 or newer.
+- Python 3.10 or newer (3.11+ recommended for production).
 - A synchronized TensorCash Core node with authenticated JSON-RPC on loopback.
 - The TensorCash explorer indexer and its local SQLite database for gateway queries.
 - For a public deployment: a hardened HTTPS reverse proxy, isolated service account, DNS name, and valid TLS certificate.
@@ -78,8 +91,8 @@ Run the gateway in a separate terminal after TensorCash Core and the explorer in
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r server/requirements.txt
-python -m pytest
+python -m pip install -r server/requirements-dev.txt
+python -m pytest server/tests
 python -m server.app
 ```
 
@@ -110,7 +123,14 @@ The gateway reads process environment variables; no secrets are compiled into it
 | `TSCWALLET_RPC_PASSWORD` | Dedicated RPC password | Long random secret, server-side only |
 | `TSCWALLET_ALLOWED_ORIGINS` | Exact browser origins allowed to mutate state | `https://app.example` |
 | `TSCWALLET_RPC_TIMEOUT` | Core request timeout in seconds | `8` by default |
+| `TSCWALLET_RPC_BATCH_SIZE` | Maximum Core calls in one JSON-RPC batch | `50` |
+| `TSCWALLET_UTXO_CANDIDATE_LIMIT` | Maximum indexed UTXO candidates per wallet query | `500` |
+| `TSCWALLET_MEMPOOL_LIMIT` | Maximum mempool transactions decoded per cache fill | `500` |
+| `TSCWALLET_PUBLIC_READ_RATE` | Per-IP refill rate for expensive wallet/Core operations | `2` requests/second |
+| `TSCWALLET_PUBLIC_READ_BURST` | Per-IP burst for expensive wallet/Core operations | `12` |
+| `TSCWALLET_MAX_PAGE` | Maximum accepted API page number | `10000` |
 | `VITE_WALLET_GATEWAY_URL` | Browser-facing gateway baked into the build | `https://app.example/wallet` |
+| `VITE_ALLOWED_GATEWAY_ORIGINS` | Additional exact cross-origin gateways compiled into CSP and client policy | Empty for same-origin production |
 | `VITE_SOURCE_URL` | Public source link baked into the build | Public repository URL |
 | `VITE_EXPLORER_URL` | Public transaction explorer baked into the build | Trusted HTTPS explorer |
 
@@ -118,9 +138,9 @@ Never put `TSCWALLET_RPC_USER` or `TSCWALLET_RPC_PASSWORD` in a variable whose n
 
 ## Public deployment
 
-Deployment files are intentionally not included because service managers,
-reverse proxies, filesystem paths and hardening policies are operator-specific.
-The required boundary is nevertheless strict:
+Sanitized Nginx, systemd and environment references are included under
+`deploy/examples/`. They contain placeholders, not production credentials, and
+must be reviewed for the target host. The required boundary is strict:
 
 ```text
 Internet -> HTTPS reverse proxy -> loopback-only gateway
@@ -171,7 +191,16 @@ This project uses [Semantic Versioning](https://semver.org/):
 - `PATCH` contains backward-compatible fixes and security hardening.
 - Git tags and GitHub releases use a `v` prefix, for example `v1.0.0`; package files use `1.0.0`.
 
-The first public version is **v1.0.0**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
+The current patch release is **v1.0.1**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
+
+## Core compatibility
+
+v1.0.1 targets **TensorCash Core v1.1.0** wallet descriptors and mainnet RPC
+behavior. The BIP341 fix is covered by the published BIP86 vector, and the
+project tests Qt wallet parsing/export structure and P2WPKH transaction signing.
+A disposable end-to-end restore and spend through the exact production Core
+binary remains a release/operator check; do not treat source comparison alone as
+a guarantee for a future Core release.
 
 Recommended release flow:
 

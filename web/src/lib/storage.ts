@@ -25,10 +25,31 @@ export interface WalletAccountCache {
   fundedAddresses?: WalletAddressBalance[];
 }
 
+export interface VaultInventory {
+  wallets: EncryptedVault[];
+  invalidRecordCount: number;
+}
+
 function walletKey(walletId: string): string { return `${WALLET_PREFIX}${walletId}`; }
 function receiveKey(walletId: string): string { return `${RECEIVE_PREFIX}${walletId}`; }
 function backupKey(walletId: string): string { return `${BACKUP_PREFIX}${walletId}`; }
 function accountCacheKey(walletId: string): string { return `${ACCOUNT_CACHE_PREFIX}${walletId}`; }
+
+export function filterStoredVaultRecords(keys: readonly IDBValidKey[], values: readonly unknown[]): VaultInventory {
+  const wallets: EncryptedVault[] = [];
+  let invalidRecordCount = 0;
+  keys.forEach((key, index) => {
+    if (typeof key !== 'string' || !key.startsWith(WALLET_PREFIX)) return;
+    try {
+      validateVault(values[index]);
+      wallets.push(values[index] as EncryptedVault);
+    } catch {
+      invalidRecordCount += 1;
+    }
+  });
+  wallets.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return { wallets, invalidRecordCount };
+}
 
 function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value);
@@ -85,7 +106,12 @@ async function migrateLegacyVault(database: IDBDatabase): Promise<EncryptedVault
     'Unable to read encrypted wallet storage',
   );
   if (value === undefined) return null;
-  validateVault(value);
+  try {
+    validateVault(value);
+  } catch {
+    // A damaged legacy record must not hide healthy multi-wallet records.
+    return null;
+  }
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE, 'readwrite');
     const store = transaction.objectStore(STORE);
@@ -99,7 +125,7 @@ async function migrateLegacyVault(database: IDBDatabase): Promise<EncryptedVault
   return value;
 }
 
-export async function loadVaults(): Promise<EncryptedVault[]> {
+export async function loadVaultInventory(): Promise<VaultInventory> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE, 'readonly');
@@ -108,16 +134,14 @@ export async function loadVaults(): Promise<EncryptedVault[]> {
       requestValue(store.getAllKeys(), 'Unable to list encrypted wallets'),
       requestValue(store.getAll(), 'Unable to list encrypted wallets'),
     ]);
-    const wallets: EncryptedVault[] = [];
-    keys.forEach((key, index) => {
-      if (typeof key !== 'string' || !key.startsWith(WALLET_PREFIX)) return;
-      validateVault(values[index]);
-      wallets.push(values[index] as EncryptedVault);
-    });
-    return wallets.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return filterStoredVaultRecords(keys, values);
   } finally {
     database.close();
   }
+}
+
+export async function loadVaults(): Promise<EncryptedVault[]> {
+  return (await loadVaultInventory()).wallets;
 }
 
 export async function loadVault(): Promise<EncryptedVault | null> {
@@ -131,8 +155,13 @@ export async function loadVault(): Promise<EncryptedVault | null> {
         'Unable to read encrypted wallet storage',
       );
       if (value !== undefined) {
-        validateVault(value);
-        return value;
+        try {
+          validateVault(value);
+          return value;
+        } catch {
+          // Fall through to another healthy wallet instead of presenting an
+          // empty device when only the active record was damaged.
+        }
       }
     }
   } finally {

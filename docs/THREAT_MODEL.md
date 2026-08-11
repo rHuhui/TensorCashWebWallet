@@ -1,6 +1,6 @@
 # Threat model
 
-This document describes the v1.0.0 design. It does not claim that the implementation has been independently audited.
+This document describes the v1.0.1 design after remediation of the independent 11 August 2026 review. The review and this document are not a certification.
 
 ## Security goals
 
@@ -67,8 +67,8 @@ Passwords, descriptors, wallet files, vault ciphertext, and private/recovery key
 | Arbitrary Core RPC access | Fixed RPC method allowlist; Core loopback/auth; no Nginx RPC proxy | Compromise of gateway OS/user can call methods allowed to that RPC identity |
 | Public Gunicorn/Core/database exposure | Loopback binds, systemd localhost IP policy, firewall, only Nginx public | Misconfiguration must be detected after every deployment |
 | Cross-origin transaction relay | Exact origin checks for mutation endpoints, JSON content type, Nginx rate limit | CORS does not stop non-browser clients; signed transaction relay remains public-service abuse risk |
-| API denial of service | Bounded address/page/body sizes, timeouts, mempool cache, Nginx request limit/rate limit | Resource exhaustion and Core dependency failures remain possible |
-| Frontend substitution/supply-chain attack | HTTPS, strict CSP, no third-party runtime assets, lockfile, reviewed immutable tagged builds | Anyone controlling origin/build/dependency can still ship key-stealing code |
+| API denial of service | Bounded address/page/body/UTXO/mempool sizes, 50-call RPC chunks, in-app per-IP token bucket, timeouts, mempool cache and Nginx limit | Distributed resource exhaustion and Core dependency failures remain possible |
+| Frontend substitution/supply-chain attack | HTTPS, exact-origin `connect-src`, no third-party runtime assets, exact dependency pins, vendored-runtime checksum, reviewed immutable tagged builds | Anyone controlling origin/build/dependency can still ship key-stealing code |
 | Clickjacking/data exfiltration | `frame-ancestors 'none'`, X-Frame-Options, no-referrer, restrictive permissions policy | Browser/extension compromise bypasses web-origin controls |
 | Unlocked-session misuse | Fresh password verification for send, backup, and recovery access | Re-verification is not MFA; keyloggers can observe it |
 | Backup loss | Prominent export workflow and independent-copy guidance | No server reset/recovery exists |
@@ -100,7 +100,7 @@ This boundary must be verified from both the host and an external machine. A con
 
 A malicious extension, browser, operating system, clipboard manager, served script, or physical attacker with an unlocked session can observe passwords and decrypted material, replace a displayed address, or authorize a different transaction. JavaScript attempts to wipe owned byte arrays, but runtimes may retain copies.
 
-Use a dedicated, patched browser profile with minimal extensions; verify recipients out of band for important payments; lock the wallet/device; and keep only appropriate amounts in a browser wallet. Hardware-wallet isolation is outside v1.0.0.
+Use a dedicated, patched browser profile with minimal extensions; verify recipients out of band for important payments; lock the wallet/device; and keep only appropriate amounts in a browser wallet. Hardware-wallet isolation is outside v1.0.1.
 
 ## Assumptions requiring continuous validation
 

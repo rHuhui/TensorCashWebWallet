@@ -58,6 +58,10 @@ a { color: inherit; }
 .chain-notice button { margin-left: auto; border: 0; border-bottom: 1px solid currentColor; padding: 1px 0; background: transparent; color: inherit; font-size: 10px; font-weight: 850; cursor: pointer; }
 .chain-notice.error { border-color: #e5bdc6; background: rgba(253,239,242,.96); color: #8d2337; }
 .chain-notice.error > i { background: #bd3443; box-shadow: 0 0 0 4px rgba(189,52,67,.12); }
+.storage-warning { position: fixed; z-index: 84; top: 140px; left: 50%; width: min(760px, calc(100vw - 32px)); padding: 12px 44px 12px 16px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 5px 12px; border: 1px solid #d8b66c; border-radius: 14px; background: rgba(255,249,232,.98); color: #5f421b; box-shadow: 0 16px 45px rgba(53,37,22,.14); transform: translateX(-50%); animation: toast-in .32s ease both; }
+.storage-warning strong { font-size: 11px; letter-spacing: .02em; }
+.storage-warning span { font-size: 11px; line-height: 1.45; }
+.storage-warning button { position: absolute; top: 50%; right: 13px; width: 28px; height: 28px; border: 0; border-radius: 50%; background: rgba(95,66,27,.08); color: inherit; font-size: 19px; cursor: pointer; transform: translateY(-50%); }
 @keyframes notice-pulse { 70%, 100% { box-shadow: 0 0 0 9px rgba(173,109,19,0); } }
 .compact-address { background: white; border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; color: #535158; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; cursor: pointer; }
 .compact-address:hover { border-color: #b4afb1; }
@@ -612,6 +616,20 @@ input:focus, textarea:focus { border-color: var(--wine); box-shadow: 0 0 0 3px r
 .delete-wallet-submit:disabled { border-color: #ddc9ce; background: #e7dadd; color: #a68f94; box-shadow: none; }
 .password-input { position: relative; display: block; }
 .password-input input { padding-right: 49px; }
+.password-strength { display: grid; gap: 7px; margin-top: -6px; }
+.password-strength > span { display: grid; grid-template-columns: repeat(4,1fr); gap: 5px; }
+.password-strength i { height: 4px; border-radius: 999px; background: #e8e3e1; transition: background .2s ease, transform .2s ease; }
+.password-strength i.active { background: #b77a28; transform: scaleY(1.15); }
+.password-strength.score-3 i.active, .password-strength.score-4 i.active { background: #2e8b68; }
+.password-strength small { color: #797278; font-size: 10px; }
+.password-container-warning { margin: -4px 0 2px; padding: 11px 12px; border: 1px solid #ead9ac; border-radius: 6px; background: #fff9ea; color: #765b2e; font-size: 10.5px; line-height: 1.5; }
+.unsupported-funds-note { display: block; margin-top: 8px; color: #986920; line-height: 1.5; }
+.high-fee-confirm { display: grid !important; grid-template-columns: auto 1fr; align-items: start; gap: 10px; padding: 13px; border: 1px solid #dfb65d; border-radius: 7px; background: #fff9e9; text-transform: none !important; letter-spacing: 0 !important; }
+.high-fee-confirm input { width: 17px; height: 17px; margin: 1px 0 0; accent-color: var(--wine); }
+.high-fee-confirm strong, .high-fee-confirm small { display: block; }
+.high-fee-confirm strong { color: #624317; font-size: 11px; }
+.high-fee-confirm small { margin-top: 4px; color: #80673e; font-size: 10px; line-height: 1.45; }
+.send-unavailable { min-height: 320px; display: grid; align-content: center; }
 .password-toggle { position: absolute; top: 50%; right: 7px; width: 36px; height: 36px; transform: translateY(-50%); display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: #817c81; cursor: pointer; transition: color .18s ease, background .18s ease; }
 .password-toggle:hover, .password-toggle:focus-visible { color: var(--wine); background: var(--wine-pale); outline: none; }
 .password-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

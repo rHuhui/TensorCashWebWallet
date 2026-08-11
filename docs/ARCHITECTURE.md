@@ -1,6 +1,6 @@
 # Architecture
 
-TensorCash Web Wallet v1.0.0 separates custody from chain access. The browser owns wallet state and signing; the public service supplies chain observations and relays a transaction that is already signed.
+TensorCash Web Wallet v1.0.1 separates custody from chain access. The browser owns wallet state and signing; the public service supplies chain observations and relays a transaction that is already signed.
 
 ## Deployment topology
 
@@ -47,6 +47,8 @@ IndexedDB stores encrypted vault envelopes and public metadata needed to list a 
 `server/app.py` is a narrow adapter between public HTTP JSON and local chain services. It:
 
 - validates addresses and bounded request shapes;
+- applies an in-process per-IP limit to expensive wallet reads, UTXO
+  verification, policy testing and broadcast attempts;
 - aggregates confirmed history from the local explorer index;
 - reads recent mempool transactions from Core through a short-lived in-memory cache;
 - rechecks candidate UTXOs through Core `gettxout` before returning them;
@@ -91,7 +93,7 @@ The current public routes are:
 | `POST /api/v1/transactions/test` | Core mempool policy check | Signed transaction hex |
 | `POST /api/v1/transactions/broadcast` | Test then relay | Signed transaction hex |
 
-No endpoint accepts a password, private key, descriptor, unsigned signing plan, wallet file, or encrypted vault. Request bodies are limited and wallet queries are capped at 200 addresses.
+No endpoint accepts a password, private key, descriptor, unsigned signing plan, wallet file, or encrypted vault. Request bodies are limited, wallet queries are capped at 200 addresses, UTXO candidate queries at 500, mempool cache fills at 500 transactions, and Core JSON-RPC batches at 50 calls.
 
 ## Transaction flow
 
@@ -123,7 +125,7 @@ Compatibility is a release property, not an assumption. Release testing must res
 
 ## Origins and transport
 
-Production browser traffic should use same-origin `/api/...` through the HTTPS reverse proxy. The browser never connects directly to the gateway's loopback port or to Core RPC. Mutation endpoints accept only configured exact origins, and the reverse proxy supplies TLS, CSP, clickjacking protection, body limits, and rate limits.
+Production browser traffic should use same-origin `/api/...` through the HTTPS reverse proxy. The browser never connects directly to the gateway's loopback port or to Core RPC. Mutation endpoints accept only configured exact origins. Production `connect-src` contains only same-origin plus exact gateway origins compiled through `VITE_ALLOWED_GATEWAY_ORIGINS`; wildcard HTTPS and loopback development sources are not shipped. The reverse proxy supplies TLS, CSP, clickjacking protection, body limits, and an additional rate limit.
 
 The gateway's CORS policy is not an authentication mechanism for public chain reads. It reduces unauthorized browser-origin use of mutation endpoints; network binding, request validation, Core policy, and client-side signing provide the substantive security boundaries.
 
@@ -140,6 +142,15 @@ Operational data has different recovery properties:
 
 A release rollback must keep server code, frontend protocol, explorer schema, and Core behavior compatible. Document migrations before deployment and retain the immediately previous release.
 
-## Deliberate omissions in v1.0.0
+## Deliberate omissions in v1.0.1
 
 The gateway does not implement accounts, cloud backup, password reset, Google Authenticator, or server-side 2FA. A server-verifiable TOTP factor would create an account-to-secret database and a recovery policy that conflict with the stateless design. Sensitive local actions require fresh wallet-password verification. This is not a second factor; a future WebAuthn/passkey design would require a separate threat model and recovery review.
+
+ML-DSA wallet exports are receive/watch-only: v1.0.1 neither creates ML-DSA
+wallets nor signs an ML-DSA spend. Recovery uses an encrypted file plus password;
+there is no seed phrase or server recovery copy.
+
+Taproot receive derivation supports only Core key-path `tr(KEY)` descriptors.
+`rawtr()` and `tr(KEY,TREE)` tapscript-tree descriptors are not imported as
+derivable receive chains in v1.0.1; silently omitting the required script-tree
+Merkle root would create a different output key.

@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { bech32, bech32m } from '@scure/base';
 import { bytesToHex } from './bytes';
 import { createQtWalletMaterial, reserveQtChangeAddress, resolveQtP2wpkhSpendKey } from './qtWallet';
 import {
   checkedWalletChangeAddress,
   feeRateFromTscPerKvb,
   maximumP2wpkhSendAmount,
+  partitionP2wpkhUtxos,
   parseTscAmount,
   planP2wpkhTransaction,
   p2wpkhScript,
+  requiresHighFeeConfirmation,
   signP2wpkhTransaction,
 } from './transaction';
 
@@ -69,5 +72,71 @@ describe('standard TSC transaction signing', () => {
     const plan = planP2wpkhTransaction(utxos, destination.address, maximum.amountSats, wallet.address, 2, 200);
     expect(plan.changeSats).toBe(0);
     expect(plan.feeSats).toBe(maximum.feeSats);
+  });
+
+  it('skips a valid unsupported witness UTXO without disabling P2WPKH funds', async () => {
+    const wallet = await createQtWalletMaterial('mixed-output-source-password');
+    const destination = await createQtWalletMaterial('mixed-output-target-password');
+    const spendable = {
+      address: wallet.address,
+      txid: '44'.repeat(32),
+      vout: 0,
+      value_sats: 1_000_000,
+      script_pubkey: bytesToHex(p2wpkhScript(wallet.address)),
+      height: 100,
+      confirmations: 20,
+      coinbase: false,
+    };
+    const taprootProgram = new Uint8Array(32).fill(0x42);
+    const taprootAddress = bech32m.encode('tc', [1, ...bech32m.toWords(taprootProgram)], 90);
+    const unsupported = {
+      address: taprootAddress,
+      txid: '55'.repeat(32),
+      vout: 1,
+      value_sats: 500_000,
+      script_pubkey: `5120${bytesToHex(taprootProgram)}`,
+      height: 101,
+      confirmations: 19,
+      coinbase: false,
+    };
+    const partition = partitionP2wpkhUtxos([spendable, unsupported]);
+    expect(partition.spendable).toHaveLength(1);
+    expect(partition.unsupported).toHaveLength(1);
+    expect(partition.unsupportedValueSats).toBe(500_000);
+    expect(planP2wpkhTransaction([spendable, unsupported], destination.address, 100_000, wallet.address, 1).inputs).toHaveLength(1);
+  });
+
+  it('rejects witness-v1 outputs encoded with the legacy bech32 checksum', () => {
+    const program = new Uint8Array(32).fill(0x24);
+    const nonCanonicalAddress = bech32.encode('tc', [1, ...bech32.toWords(program)], 90);
+    expect(() => partitionP2wpkhUtxos([{
+      address: nonCanonicalAddress,
+      txid: '66'.repeat(32),
+      vout: 0,
+      value_sats: 500_000,
+      script_pubkey: `5120${bytesToHex(program)}`,
+      height: 100,
+      confirmations: 20,
+      coinbase: false,
+    }])).toThrow(/witness checksum/i);
+  });
+
+  it('allows legitimate high-fee plans only after explicit UI confirmation', async () => {
+    const wallet = await createQtWalletMaterial('high-fee-source-password');
+    const destination = await createQtWalletMaterial('high-fee-target-password');
+    const utxos = Array.from({ length: 60 }, (_, index) => ({
+      address: wallet.address,
+      txid: index.toString(16).padStart(64, '0'),
+      vout: 0,
+      value_sats: 5_000,
+      script_pubkey: bytesToHex(p2wpkhScript(wallet.address)),
+      height: 100 + index,
+      confirmations: 100,
+      coinbase: false,
+    }));
+    const maximum = maximumP2wpkhSendAmount(utxos, 5);
+    expect(maximum.amountSats).toBeGreaterThan(0);
+    const plan = planP2wpkhTransaction(utxos, destination.address, 200_000, wallet.address, 5);
+    expect(requiresHighFeeConfirmation(plan)).toBe(true);
   });
 });

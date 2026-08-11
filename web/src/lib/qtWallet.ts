@@ -1,6 +1,6 @@
 import { HDKey } from '@scure/bip32';
 import { base58check, bech32, bech32m } from '@scure/base';
-import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { secp256k1, schnorr } from '@noble/curves/secp256k1.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js/dist/sql-asm.js';
@@ -8,10 +8,12 @@ import {
   base64ToBytes,
   bytesToBase64,
   bytesToHex,
+  bytesToNumberBE,
   compactSize,
   concatBytes,
   encoder,
   hexToBytes,
+  numberToBytesBE,
   wipe,
 } from './bytes';
 import type { CoreDescriptorMaterial, CoreWalletMaterial, WalletMaterial } from './types';
@@ -309,8 +311,38 @@ function descriptorKind(descriptor: string): CoreDescriptorMaterial['outputType'
   if (descriptor.startsWith('wpkh(')) return 'bech32';
   if (descriptor.startsWith('sh(wpkh(')) return 'p2sh-segwit';
   if (descriptor.startsWith('pkh(')) return 'legacy';
-  if (descriptor.startsWith('tr(')) return 'bech32m';
+  // v1.0.1 supports key-path-only tr(KEY) descriptors. A comma denotes a
+  // tapscript tree whose Merkle root must be part of TapTweak; do not silently
+  // derive it with key-path-only semantics. rawtr() is deliberately excluded.
+  const body = descriptor.split('#', 1)[0];
+  if (body.startsWith('tr(') && !body.includes(',')) return 'bech32m';
   return null;
+}
+
+function taggedHash(tag: string, message: Uint8Array): Uint8Array {
+  const tagHash = sha256(encoder.encode(tag));
+  return sha256(concatBytes(tagHash, tagHash, message));
+}
+
+/**
+ * Applies the BIP341 key-path TapTweak used by Core's `tr()` descriptors.
+ * `rawtr()` deliberately does not apply this tweak and is not accepted by the
+ * descriptor parser in this wallet.
+ */
+export function bip341OutputKey(internalPublicKey: Uint8Array, merkleRoot?: Uint8Array): Uint8Array {
+  if (internalPublicKey.length !== 32) throw new Error('Taproot internal key must be 32 bytes');
+  if (merkleRoot && merkleRoot.length !== 32) throw new Error('Taproot Merkle root must be 32 bytes');
+  const tweak = bytesToNumberBE(taggedHash(
+    'TapTweak',
+    merkleRoot ? concatBytes(internalPublicKey, merkleRoot) : internalPublicKey,
+  ));
+  if (tweak >= secp256k1.Point.Fn.ORDER) throw new Error('Invalid Taproot tweak');
+  const internalPoint = schnorr.utils.lift_x(bytesToNumberBE(internalPublicKey));
+  const outputPoint = tweak === 0n
+    ? internalPoint
+    : internalPoint.add(secp256k1.Point.BASE.multiply(tweak));
+  outputPoint.assertValidity();
+  return numberToBytesBE(outputPoint.x, 32);
 }
 
 function descriptorPublicHdKey(descriptor: string): { publicRoot: HDKey; suffix: string; publicVersion: number } {
@@ -391,15 +423,20 @@ function deriveAddressFromRoot(descriptor: string, root: HDKey, suffix: string, 
   const type = descriptorKind(descriptor);
   const path = `m${suffix.replace(/h/g, "'").replace('*', String(index))}`;
   const child = root.derive(path);
-  if (!child.publicKey) throw new Error('Unable to derive Qt wallet address');
-  if (type === 'bech32') {
-    const program = ripemd160(sha256(child.publicKey));
-    return bech32.encode('tc', [0, ...bech32.toWords(program)]);
+  try {
+    if (!child.publicKey) throw new Error('Unable to derive Qt wallet address');
+    if (type === 'bech32') {
+      const program = ripemd160(sha256(child.publicKey));
+      return bech32.encode('tc', [0, ...bech32.toWords(program)]);
+    }
+    if (type === 'bech32m') {
+      const outputKey = bip341OutputKey(child.publicKey.slice(1, 33));
+      return bech32m.encode('tc', [1, ...bech32m.toWords(outputKey)]);
+    }
+    throw new Error(`Qt ${type ?? 'unknown'} addresses are not yet selectable in the web wallet`);
+  } finally {
+    child.wipePrivateData();
   }
-  if (type === 'bech32m') {
-    return bech32m.encode('tc', [1, ...bech32m.toWords(child.publicKey.slice(1, 33))]);
-  }
-  throw new Error(`Qt ${type ?? 'unknown'} addresses are not yet selectable in the web wallet`);
 }
 
 function deriveAddress(descriptor: string, privateKey: Uint8Array, index: number): string {
@@ -704,9 +741,32 @@ function activeChangeDescriptor(material: CoreWalletMaterial): CoreDescriptorMat
  * returned arrays are owned by the caller and must be wiped after signing.
  */
 export function resolveQtP2wpkhSpendKey(material: CoreWalletMaterial, address: string): SpendKey {
-  const expected = address.toLowerCase();
+  const resolver = createQtP2wpkhSpendKeyResolver(material, [address]);
+  try {
+    return resolver.resolve(address);
+  } finally {
+    resolver.destroy();
+  }
+}
+
+export interface QtP2wpkhSpendKeyResolver {
+  resolve(address: string): SpendKey;
+  destroy(): void;
+}
+
+/**
+ * Builds one transient address-to-key map for all inputs in a transaction.
+ * This avoids repeating descriptor derivation for every UTXO. `resolve()`
+ * returns caller-owned copies; `destroy()` wipes the resolver's cached keys.
+ */
+export function createQtP2wpkhSpendKeyResolver(
+  material: CoreWalletMaterial,
+  requestedAddresses: string[],
+): QtP2wpkhSpendKeyResolver {
+  const requested = new Set(requestedAddresses.map((address) => address.toLowerCase()));
+  const cached = new Map<string, SpendKey>();
   for (const descriptor of material.key.descriptors) {
-    if (descriptor.outputType !== 'bech32') continue;
+    if (descriptor.outputType !== 'bech32' || cached.size === requested.size) continue;
     const masterPrivateKey = hexToBytes(descriptor.masterPrivateKeyHex);
     let root: HDKey | null = null;
     try {
@@ -718,16 +778,21 @@ export function resolveQtP2wpkhSpendKey(material: CoreWalletMaterial, address: s
         Math.max(1, descriptor.nextIndex + RECEIVE_LOOKAHEAD),
       );
       for (let index = 0; index < maximum; index += 1) {
+        if (cached.size === requested.size) break;
         const path = `m${resolved.suffix.replace(/h/g, "'").replace('*', String(index))}`;
         const child = root.derive(path);
-        if (!child.publicKey || !child.privateKey) continue;
-        const program = ripemd160(sha256(child.publicKey));
-        const candidate = bech32.encode('tc', [0, ...bech32.toWords(program)]);
-        if (candidate === expected) {
-          return {
-            privateKey: Uint8Array.from(child.privateKey),
-            publicKey: Uint8Array.from(child.publicKey),
-          };
+        try {
+          if (!child.publicKey || !child.privateKey) continue;
+          const program = ripemd160(sha256(child.publicKey));
+          const candidate = bech32.encode('tc', [0, ...bech32.toWords(program)]);
+          if (requested.has(candidate) && !cached.has(candidate)) {
+            cached.set(candidate, {
+              privateKey: Uint8Array.from(child.privateKey),
+              publicKey: Uint8Array.from(child.publicKey),
+            });
+          }
+        } finally {
+          child.wipePrivateData();
         }
       }
     } finally {
@@ -735,7 +800,29 @@ export function resolveQtP2wpkhSpendKey(material: CoreWalletMaterial, address: s
       root?.wipePrivateData();
     }
   }
-  throw new Error('The wallet does not control a selected transaction input');
+  const missing = [...requested].filter((address) => !cached.has(address));
+  if (missing.length) {
+    cached.forEach((key) => { wipe(key.privateKey); wipe(key.publicKey); });
+    throw new Error('The wallet does not control a selected transaction input');
+  }
+  let destroyed = false;
+  return {
+    resolve(address: string): SpendKey {
+      if (destroyed) throw new Error('The transaction key resolver has been destroyed');
+      const key = cached.get(address.toLowerCase());
+      if (!key) throw new Error('The wallet does not control a selected transaction input');
+      return {
+        privateKey: Uint8Array.from(key.privateKey),
+        publicKey: Uint8Array.from(key.publicKey),
+      };
+    },
+    destroy(): void {
+      if (destroyed) return;
+      destroyed = true;
+      cached.forEach((key) => { wipe(key.privateKey); wipe(key.publicKey); });
+      cached.clear();
+    },
+  };
 }
 
 function derivePublicDescriptorAddress(descriptor: CoreDescriptorMaterial, index: number): string {

@@ -3,12 +3,13 @@ import packageMetadata from '../package.json';
 import { importOfficialWalletExport } from './lib/mldsa';
 import {
   advanceQtReceiveAddressCount,
+  createQtP2wpkhSpendKeyResolver,
   createQtWalletMaterial,
   hydrateQtAddressState,
   inspectQtWallet,
   importQtWallet,
   prepareQtBackup,
-  resolveQtP2wpkhSpendKey,
+  reserveQtChangeAddress,
 } from './lib/qtWallet';
 import { decryptWallet, encryptWallet, validateVault, vaultFingerprint } from './lib/vault';
 import {
@@ -17,6 +18,7 @@ import {
   loadBackupState,
   loadReceiveAddressCount,
   loadVault,
+  loadVaultInventory,
   loadVaults,
   removeVault,
   saveReceiveAddressCount,
@@ -46,8 +48,10 @@ import {
   checkedWalletChangeAddress,
   feeRateFromTscPerKvb,
   maximumP2wpkhSendAmount,
+  partitionP2wpkhUtxos,
   parseTscAmount,
   planP2wpkhTransaction,
+  requiresHighFeeConfirmation,
   signP2wpkhTransaction,
   type TransactionPlan,
   type WalletUtxo,
@@ -69,6 +73,7 @@ const SOURCE_URL = import.meta.env.VITE_SOURCE_URL || 'https://github.com/rHuhui
 const EXPLORER_URL = (import.meta.env.VITE_EXPLORER_URL || 'https://tscscan.xyz').replace(/\/$/, '');
 const APP_VERSION = packageMetadata.version;
 const TSC = 100_000_000;
+const FRESH_CHANGE_ADDRESS = '__fresh_internal_change__';
 
 function explorerTransactionUrl(txid: string) {
   return `${EXPLORER_URL}/tx/${encodeURIComponent(txid)}`;
@@ -185,7 +190,7 @@ function EmptyHome({ onCreate, onImport }: { onCreate: () => void; onImport: () 
     <main className="landing">
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow"><span /> POST-QUANTUM · SELF-CUSTODY</p>
+          <p className="eyebrow"><span /> CORE-COMPATIBLE · SELF-CUSTODY</p>
           <h1>Your TensorCash,<br /><em>without the sync.</em></h1>
           <p className="hero-lead">
             A modern TensorCash wallet that opens instantly. Create a Core/Qt-compatible wallet or import an existing wallet.dat;
@@ -227,7 +232,7 @@ function EmptyHome({ onCreate, onImport }: { onCreate: () => void; onImport: () 
         </div>
         <p>
           TensorCash Wallet stores no user profile, password, private key, backup, or recovery code on a server.
-          Make an encrypted backup immediately. Losing both browser data and that backup permanently loses access.
+          Make an encrypted backup immediately. There is no 12-word seed phrase. Losing both browser data and that backup permanently loses access.
         </p>
         <a href={SOURCE_URL} target="_blank" rel="noreferrer">Review the source ↗</a>
       </section>
@@ -235,7 +240,7 @@ function EmptyHome({ onCreate, onImport }: { onCreate: () => void; onImport: () 
   );
 }
 
-function ToolsMenu({ onView }: { onView: (view: View) => void }) {
+function ToolsMenu({ onView, sendEnabled }: { onView: (view: View) => void; sendEnabled: boolean }) {
   const items: Array<[View, string, string, string]> = [
     ['receive', 'Receive', '↓', 'Address and derivation'],
     ['send', 'Send', '↑', 'Prepare a transfer'],
@@ -250,9 +255,9 @@ function ToolsMenu({ onView }: { onView: (view: View) => void }) {
       </header>
       <div className="tools-bar-grid">
         {items.map(([id, label, icon, description]) => (
-          <button key={id} onClick={() => onView(id)}>
+          <button key={id} onClick={() => onView(id)} disabled={id === 'send' && !sendEnabled} title={id === 'send' && !sendEnabled ? 'This post-quantum wallet is receive/watch-only in v1.0.1' : undefined}>
             <span className="tool-icon">{icon}</span>
-            <span><strong>{label}</strong><small>{description}</small></span>
+            <span><strong>{label}</strong><small>{id === 'send' && !sendEnabled ? 'Receive/watch-only · signing unavailable' : description}</small></span>
             <b>→</b>
           </button>
         ))}
@@ -361,7 +366,7 @@ function Overview({ vault, summary, status, transactions, fundedAddresses, loadi
           <span><small>Chain height</small><b>{status?.indexed_height?.toLocaleString() ?? '—'}</b></span>
         </div>
       </section>
-      <ToolsMenu onView={onView} />
+      <ToolsMenu onView={onView} sendEnabled={(vault.addresses ?? [vault.address]).some((address) => address.startsWith('tc1q'))} />
       <section className="content-card recent-transactions">
         <div className="card-heading"><div><p className="eyebrow">LATEST ACTIVITY</p><h2>Recent transactions</h2></div><span>{transactions.length ? `${transactions.length} recent records` : 'No activity yet'}</span></div>
         <TransactionFilters transactions={transactions} filter={transactionFilter} onChange={setTransactionFilter} compact />
@@ -730,7 +735,7 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
   return <div className={`change-address-picker ${open ? 'is-open' : ''}`} ref={root}>
     <button className="change-address-trigger" type="button" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
       <span className="change-address-symbol">↩</span>
-      <span className="change-address-selection"><strong>{selected?.label ?? 'Select address'}</strong><code>{selected ? short(selected.address, 13, 11) : '—'}</code></span>
+      <span className="change-address-selection"><strong>{selected?.label ?? 'Select address'}</strong><code>{selected?.address === FRESH_CHANGE_ADDRESS ? 'Generated only when signing' : selected ? short(selected.address, 13, 11) : '—'}</code></span>
       {selected?.balanceSats !== undefined && <small>{formatTsc(selected.balanceSats)} TSC</small>}
       <i aria-hidden="true">⌄</i>
     </button>
@@ -739,7 +744,7 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
       <div className="change-address-options-scroll">
         {options.map((option) => <button type="button" role="option" aria-selected={option.address === value} className={option.address === value ? 'selected' : ''} key={option.address} onClick={() => { onChange(option.address); setOpen(false); }}>
           <span className="change-option-check">{option.address === value ? '✓' : ''}</span>
-          <span><strong>{option.label}</strong><code>{short(option.address, 16, 13)}</code></span>
+          <span><strong>{option.label}</strong><code>{option.address === FRESH_CHANGE_ADDRESS ? 'Generated only when signing' : short(option.address, 16, 13)}</code></span>
           <small>{option.balanceSats === undefined ? 'No current balance' : `${formatTsc(option.balanceSats)} TSC`}</small>
         </button>)}
       </div>
@@ -747,10 +752,11 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
   </div>;
 }
 
-function SendPanel({ vault, fundedAddresses, onSent }: {
+function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
   vault: EncryptedVault;
   fundedAddresses: WalletAddressBalance[];
-  onSent: (transaction: AddressTransaction) => Promise<void>;
+  onSent: (transaction: AddressTransaction, walletAddresses: string[]) => Promise<void>;
+  onVaultUpdated?: (vault: EncryptedVault) => void;
 }) {
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
@@ -760,19 +766,24 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
   const [busy, setBusy] = useState<'review' | 'send' | ''>('');
   const [error, setError] = useState('');
   const [txid, setTxid] = useState('');
-  const [spendable, setSpendable] = useState<{ balanceSats: number; feeRateSatVb: number; maximum: { amountSats: number; feeSats: number; inputCount: number } | null } | null>(null);
+  const [spendable, setSpendable] = useState<{ balanceSats: number; feeRateSatVb: number; maximum: { amountSats: number; feeSats: number; inputCount: number } | null; unsupportedValueSats: number } | null>(null);
   const [spendableLoading, setSpendableLoading] = useState(true);
   const [maxLoading, setMaxLoading] = useState(false);
+  const [highFeeConfirmed, setHighFeeConfirmed] = useState(false);
+  const sendCapable = (vault.addresses ?? [vault.address]).some((address) => address.startsWith('tc1q'));
   const defaultChangeAddress = currentReceiveAddress(vault);
-  const [changeAddress, setChangeAddress] = useState(defaultChangeAddress);
+  const [changeAddress, setChangeAddress] = useState(FRESH_CHANGE_ADDRESS);
   const issuedAddresses = issuedReceiveAddresses(vault);
   const ownedP2wpkhAddresses = [...new Set(vault.addresses?.filter((address) => address.startsWith('tc1q')) ?? [vault.address])];
   const walletAddresses = vault.addresses?.length ? vault.addresses : [vault.address];
   const walletAddressKey = walletAddresses.join('|');
   const fundedByAddress = new Map(fundedAddresses.map((item) => [item.address, item.balance_sats]));
-  const changeOptions = [defaultChangeAddress, ...fundedAddresses.map((item) => item.address), ...issuedAddresses, ...ownedP2wpkhAddresses]
+  const changeOptions = [FRESH_CHANGE_ADDRESS, defaultChangeAddress, ...fundedAddresses.map((item) => item.address), ...issuedAddresses, ...ownedP2wpkhAddresses]
     .filter((address, index, items) => address.startsWith('tc1q') && items.indexOf(address) === index);
-  const changeAddressOptions: ChangeAddressOption[] = changeOptions.map((address) => ({
+  const changeAddressOptions: ChangeAddressOption[] = [{
+    address: FRESH_CHANGE_ADDRESS,
+    label: 'Fresh internal address · recommended',
+  }, ...changeOptions.map((address) => ({
     address,
     label: address === defaultChangeAddress
       ? 'Current receive · default'
@@ -780,7 +791,7 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
         ? 'Funded wallet address'
         : issuedAddresses.includes(address) ? 'Receive address' : 'Internal change address',
     balanceSats: fundedByAddress.get(address),
-  }));
+  }))];
 
   const loadSpendable = useCallback(async () => {
     setSpendableLoading(true);
@@ -788,14 +799,15 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
       const [coins, fees] = await Promise.all([getWalletUtxos(walletAddresses), getFeeEstimate()]);
       if (!coins.status.synced) throw new Error('The selected gateway is not synchronized. Sending is paused for safety.');
       const feeRateSatVb = feeRateFromTscPerKvb(fees.fee_rate_tsc_per_kvb);
-      const balanceSats = coins.utxos.reduce((sum, coin) => sum + coin.value_sats, 0);
+      const partition = partitionP2wpkhUtxos(coins.utxos);
+      const balanceSats = partition.spendable.reduce((sum, coin) => sum + coin.value_sats, 0);
       let maximum: { amountSats: number; feeSats: number; inputCount: number } | null = null;
       try {
         maximum = maximumP2wpkhSendAmount(coins.utxos, feeRateSatVb);
       } catch {
         maximum = null;
       }
-      const next = { balanceSats, feeRateSatVb, maximum };
+      const next = { balanceSats, feeRateSatVb, maximum, unsupportedValueSats: partition.unsupportedValueSats };
       setSpendable(next);
       return next;
     } finally {
@@ -804,8 +816,9 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
   }, [walletAddressKey]);
 
   useEffect(() => {
-    setChangeAddress(currentReceiveAddress(vault));
+    setChangeAddress(FRESH_CHANGE_ADDRESS);
     setPlan(null);
+    setHighFeeConfirmed(false);
   }, [vault.walletId, vault.receiveAddressCount]);
 
   useEffect(() => {
@@ -839,14 +852,17 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
     try {
       const amountSats = parseTscAmount(amount);
       const addresses = walletAddresses;
-      const selectedChangeAddress = checkedWalletChangeAddress(changeAddress, addresses);
+      const selectedChangeAddress = changeAddress === FRESH_CHANGE_ADDRESS
+        ? currentReceiveAddress(vault)
+        : checkedWalletChangeAddress(changeAddress, addresses);
       const [coins, fees] = await Promise.all([getWalletUtxos(addresses), getFeeEstimate()]);
       if (!coins.status.synced) throw new Error('The selected gateway is not synchronized. Sending is paused for safety.');
       const feeRate = feeRateFromTscPerKvb(fees.fee_rate_tsc_per_kvb);
-      const balanceSats = coins.utxos.reduce((sum, coin) => sum + coin.value_sats, 0);
+      const partition = partitionP2wpkhUtxos(coins.utxos);
+      const balanceSats = partition.spendable.reduce((sum, coin) => sum + coin.value_sats, 0);
       let maximum = null;
       try { maximum = maximumP2wpkhSendAmount(coins.utxos, feeRate); } catch { maximum = null; }
-      setSpendable({ balanceSats, feeRateSatVb: feeRate, maximum });
+      setSpendable({ balanceSats, feeRateSatVb: feeRate, maximum, unsupportedValueSats: partition.unsupportedValueSats });
       const next = planP2wpkhTransaction(
         coins.utxos,
         recipient,
@@ -855,9 +871,10 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
         feeRate,
         coins.status.indexed_height,
       );
-      setReviewUtxos(coins.utxos);
+      setReviewUtxos(partition.spendable);
       setRecipient(next.recipient);
       setPlan(next);
+      setHighFeeConfirmed(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to prepare this transaction');
     } finally {
@@ -878,25 +895,29 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
       if (unlocked.key.algorithm !== 'CORE-DESCRIPTOR' || !('qt' in unlocked)) {
         throw new Error('This wallet key type cannot sign standard TSC transfers yet');
       }
-      const coreMaterial = hydrateQtAddressState(unlocked as CoreWalletMaterial);
+      let coreMaterial = hydrateQtAddressState(unlocked as CoreWalletMaterial);
       const addresses = coreMaterial.qt.addresses.length ? coreMaterial.qt.addresses : [coreMaterial.address];
-      const selectedChangeAddress = checkedWalletChangeAddress(changeAddress, addresses);
       const freshCoins = await getWalletUtxos(addresses);
       if (!freshCoins.status.synced) throw new Error('The selected gateway is not synchronized. Sending is paused for safety.');
-      const checkedPlan = planP2wpkhTransaction(
-        freshCoins.utxos,
-        plan.recipient,
-        plan.amountSats,
-        selectedChangeAddress,
-        plan.feeRateSatVb,
-        freshCoins.status.indexed_height,
-      );
-      if (checkedPlan.feeSats !== plan.feeSats || checkedPlan.inputs.length !== plan.inputs.length) {
-        setPlan(checkedPlan);
-        setReviewUtxos(freshCoins.utxos);
-        throw new Error('Spendable inputs changed. Review the updated network fee and confirm again.');
+      let selectedChangeAddress: string;
+      if (changeAddress === FRESH_CHANGE_ADDRESS) {
+        if (plan.changeSats > 0) {
+          const reservation = await reserveQtChangeAddress(coreMaterial);
+          coreMaterial = reservation.material;
+          selectedChangeAddress = reservation.address;
+          const updatedVault = await encryptWallet(coreMaterial, password, { allowLegacyPassword: true }, vault.walletName);
+          await saveVault(updatedVault);
+          onVaultUpdated?.(updatedVault);
+          setChangeAddress(reservation.address);
+        } else {
+          // The planner requires a valid wallet-owned script even when the
+          // selected inputs produce no change output. Do not consume an
+          // internal descriptor index in that case.
+          selectedChangeAddress = currentReceiveAddress(vault);
+        }
+      } else {
+        selectedChangeAddress = checkedWalletChangeAddress(changeAddress, addresses);
       }
-
       const finalPlan = planP2wpkhTransaction(
         freshCoins.utxos,
         plan.recipient,
@@ -905,10 +926,27 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
         plan.feeRateSatVb,
         freshCoins.status.indexed_height,
       );
-      if (finalPlan.feeSats !== plan.feeSats || finalPlan.amountSats !== plan.amountSats) {
+      const reviewedInputs = plan.inputs.map((input) => `${input.txid}:${input.vout}`).join('|');
+      const finalInputs = finalPlan.inputs.map((input) => `${input.txid}:${input.vout}`).join('|');
+      if (finalPlan.feeSats !== plan.feeSats || finalInputs !== reviewedInputs) {
+        setPlan(finalPlan);
+        setReviewUtxos(partitionP2wpkhUtxos(freshCoins.utxos).spendable);
+        setHighFeeConfirmed(false);
+        throw new Error('Spendable inputs changed. Review the updated network fee and confirm again.');
+      }
+      if (finalPlan.amountSats !== plan.amountSats) {
         throw new Error('Final transaction does not match the reviewed amount and fee');
       }
-      const signed = signP2wpkhTransaction(finalPlan, (address) => resolveQtP2wpkhSpendKey(coreMaterial, address));
+      if (requiresHighFeeConfirmation(finalPlan) && !highFeeConfirmed) {
+        throw new Error('Confirm the unusually high network fee before signing');
+      }
+      const keyResolver = createQtP2wpkhSpendKeyResolver(coreMaterial, finalPlan.inputs.map((input) => input.address));
+      let signed;
+      try {
+        signed = signP2wpkhTransaction(finalPlan, keyResolver.resolve);
+      } finally {
+        keyResolver.destroy();
+      }
 
       const preflight = await testSignedTransaction(signed.hex);
       if (!preflight.result.allowed) {
@@ -921,10 +959,11 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
       if (broadcast.txid.toLowerCase() !== signed.txid) {
         throw new Error('Broadcast transaction id does not match the locally signed transaction');
       }
-      const pendingTransaction = createLocalPendingTransaction(signed.txid, finalPlan, addresses);
+      const finalAddresses = coreMaterial.qt.addresses.length ? coreMaterial.qt.addresses : [coreMaterial.address];
+      const pendingTransaction = createLocalPendingTransaction(signed.txid, finalPlan, finalAddresses);
       setTxid(signed.txid);
       setPassword('');
-      await onSent(pendingTransaction);
+      await onSent(pendingTransaction, finalAddresses);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Transaction failed safely before broadcast');
     } finally {
@@ -932,6 +971,8 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
       setBusy('');
     }
   }
+
+  if (!sendCapable) return <section className="send-layout enter"><div className="content-card send-card send-unavailable"><p className="eyebrow">RECEIVE / WATCH ONLY</p><h2>Post-quantum signing is not available yet</h2><p>This imported ML-DSA wallet can receive TSC and monitor balances, but v1.0.1 cannot create an ML-DSA spend. No password is requested because this action is unsupported.</p></div></section>;
 
   if (txid) return (
     <section className="send-layout enter">
@@ -956,6 +997,7 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
             <div className="send-field-heading"><span className="send-field-label">Amount</span><small>{spendableLoading ? 'Loading spendable balance…' : `${formatTsc(spendable?.balanceSats)} TSC available`}</small></div>
             <div className="amount-input"><input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="0.00" autoComplete="off" data-1p-ignore="true" data-lpignore="true" disabled={Boolean(busy)} /><button type="button" onClick={() => void useMaximumAmount()} disabled={Boolean(busy) || maxLoading || spendableLoading}>{maxLoading ? <span className="button-spinner dark" aria-hidden="true" /> : 'MAX'}</button><span>TSC</span></div>
             {spendable?.maximum && <small className="max-fee-note">MAX reserves an estimated {formatTsc(spendable.maximum.feeSats)} TSC network fee across {spendable.maximum.inputCount} UTXO{spendable.maximum.inputCount === 1 ? '' : 's'}.</small>}
+            {Boolean(spendable?.unsupportedValueSats) && <small className="unsupported-funds-note">{formatTsc(spendable?.unsupportedValueSats)} TSC is held in Taproot/post-quantum outputs that this wallet version cannot sign and is excluded from spendable funds.</small>}
           </div>
           <div className="send-field"><span className="send-field-label">Change address</span><ChangeAddressPicker value={changeAddress} options={changeAddressOptions} disabled={Boolean(busy)} onChange={(address) => { setChangeAddress(address); setPlan(null); }} /><small className="field-help">Only addresses controlled by this wallet are shown.</small></div>
           <div className="send-concepts" aria-label="Transaction terminology">
@@ -972,12 +1014,13 @@ function SendPanel({ vault, fundedAddresses, onSent }: {
             <div><dt>Network fee</dt><dd>{formatTsc(plan.feeSats)} TSC <small>· {plan.feeRateSatVb} sat/vB</small></dd></div>
             <div><dt>Wallet inputs (UTXOs)</dt><dd>{plan.inputs.length} <small>· {formatTsc(reviewUtxos.reduce((sum, coin) => sum + coin.value_sats, 0))} TSC available</small></dd></div>
             <div><dt>Change returned</dt><dd>{formatTsc(plan.changeSats)} TSC</dd></div>
-            <div><dt>Change address</dt><dd title={changeAddress}>{plan.changeSats ? short(changeAddress, 15, 13) : 'No change output'}</dd></div>
+            <div><dt>Change address</dt><dd title={changeAddress === FRESH_CHANGE_ADDRESS ? 'Fresh internal address' : changeAddress}>{plan.changeSats ? (changeAddress === FRESH_CHANGE_ADDRESS ? 'Fresh internal address reserved at signing' : short(changeAddress, 15, 13)) : 'No change output'}</dd></div>
           </dl>
+          {requiresHighFeeConfirmation(plan) && <label className="high-fee-confirm"><input type="checkbox" checked={highFeeConfirmed} onChange={(event) => setHighFeeConfirmed(event.target.checked)} /><span><strong>Confirm high network fee</strong><small>The {formatTsc(plan.feeSats)} TSC fee is more than 1% of this payment. The absolute safety ceiling still applies.</small></span></label>}
           <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={6} />
           <p className="send-confirm-note">Password verification and signing happen only on this device. The selected change address is rechecked as wallet-owned before broadcast.</p>
           {error && <p className="send-error" role="alert">{error}</p>}
-          <div className="send-review-actions"><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => { setPlan(null); setError(''); setPassword(''); }}>Edit</button><button className="button primary modal-submit" disabled={Boolean(busy) || password.length < 6} aria-busy={busy === 'send'}>{busy === 'send' && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'send' ? 'Signing and verifying…' : 'Sign and broadcast'}</span></button></div>
+          <div className="send-review-actions"><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => { setPlan(null); setError(''); setPassword(''); setHighFeeConfirmed(false); }}>Edit</button><button className="button primary modal-submit" disabled={Boolean(busy) || password.length < 6 || (requiresHighFeeConfirmation(plan) && !highFeeConfirmed)} aria-busy={busy === 'send'}>{busy === 'send' && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'send' ? 'Signing and verifying…' : 'Sign and broadcast'}</span></button></div>
         </form>}
       </div>
     </section>
@@ -1109,6 +1152,13 @@ function PasswordField({
   return <label>{label}<span className="password-input"><input type={visible ? 'text' : 'password'} autoComplete="new-password" data-1p-ignore="true" data-lpignore="true" data-form-type="other" value={value} onChange={(event) => onChange(event.target.value)} minLength={minLength} required /><button className="password-toggle" type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`} aria-pressed={visible}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.75"/></svg></button></span></label>;
 }
 
+function PasswordStrength({ password }: { password: string }) {
+  const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((pattern) => pattern.test(password)).length;
+  const score = Math.max(0, Math.min(4, (password.length >= 12 ? 1 : 0) + (password.length >= 16 ? 1 : 0) + Math.min(2, classes - 1)));
+  const label = ['Too short', 'Basic', 'Good', 'Strong', 'Very strong'][score];
+  return <div className={`password-strength score-${score}`} aria-live="polite"><span>{[0, 1, 2, 3].map((index) => <i key={index} className={index < score ? 'active' : ''} />)}</span><small>{label} · 12 characters minimum</small></div>;
+}
+
 function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated, onUnlocked, onImported, onBackedUp }: {
   dialog: Exclude<Dialog, null>;
   vault: EncryptedVault | null;
@@ -1127,6 +1177,7 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [qtEncrypted, setQtEncrypted] = useState<boolean | null>(null);
   const [qtPrimaryAddress, setQtPrimaryAddress] = useState<string | null>(null);
+  const [restoringWebVault, setRestoringWebVault] = useState(false);
   const [busy, setBusy] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1166,7 +1217,7 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
         const receiveChanged = JSON.stringify(vault.receiveAddresses ?? []) !== JSON.stringify(material.qt.receiveAddresses ?? []);
         const countChanged = vault.receiveAddressCount !== material.qt.receiveAddressCount;
         if (addressesChanged || receiveChanged || countChanged) {
-          migratedVault = await encryptWallet(material, password, {}, vault.walletName);
+          migratedVault = await encryptWallet(material, password, { allowLegacyPassword: true }, vault.walletName);
           await saveVault(migratedVault);
         }
       }
@@ -1201,7 +1252,7 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
           const countChanged = parsed.receiveAddressCount !== material.qt.receiveAddressCount;
           metadataChanged ||= addressesChanged || receiveChanged || countChanged;
         }
-        if (metadataChanged) restoredVault = await encryptWallet(material, password, {}, walletName);
+        if (metadataChanged) restoredVault = await encryptWallet(material, password, { allowLegacyPassword: true }, walletName);
         await saveVault(restoredVault);
         onImported(restoredVault, material);
       } catch (vaultError) {
@@ -1222,6 +1273,7 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
     setSourceFile(null);
     setQtEncrypted(null);
     setQtPrimaryAddress(null);
+    setRestoringWebVault(false);
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1233,9 +1285,15 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
         setSource('');
         return;
       }
-      setSource(await file.text());
+      const text = await file.text();
+      setSource(text);
       setSourceFile(file);
       setQtEncrypted(null);
+      try {
+        setRestoringWebVault((JSON.parse(text) as { schema?: string })?.schema === 'org.tensorcash.webwallet.vault');
+      } catch {
+        setRestoringWebVault(false);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to read wallet backup');
     } finally {
@@ -1252,8 +1310,9 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
   const actionLabel = dialog === 'backup' ? 'Verify and download' : dialog === 'unlock' ? 'Unlock Wallet' : dialog === 'import' ? 'Encrypt and import' : 'Generate and encrypt wallet';
   const busyLabel = dialog === 'backup' ? 'Preparing backup…' : dialog === 'unlock' ? 'Unlocking wallet…' : dialog === 'import' ? 'Importing wallet…' : 'Creating wallet…';
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && !fileBusy && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={busy || fileBusy}>×</button><p className="eyebrow">TENSORCASH WALLET</p><h2 id="modal-title">{titles[dialog][0]}</h2><p className="modal-lead">{titles[dialog][1]}</p><form onSubmit={submit} autoComplete="off">{(dialog === 'create' || dialog === 'import') && <label>Wallet name<input value={walletName} onChange={(event) => setWalletName(event.target.value)} maxLength={40} placeholder="e.g. Personal wallet" autoComplete="off" data-1p-ignore="true" data-lpignore="true" required /></label>}{dialog === 'import' && <><input ref={fileRef} type="file" accept=".dat,.bak,.wallet,.json,application/json,application/octet-stream,application/x-sqlite3" hidden onChange={(event) => void readFile(event.target.files?.[0])} /><button className="file-drop" type="button" onClick={() => fileRef.current?.click()} disabled={fileBusy || busy} aria-busy={fileBusy}>{fileBusy ? <><span className="button-spinner dark" aria-hidden="true" /><strong>Inspecting wallet file…</strong><small>Checking encryption and address metadata locally</small></> : <><span>↑</span><strong>{sourceFile?.name ?? 'Choose Qt wallet.dat or backup file'}</strong><small>{qtEncrypted === true ? 'Encrypted Qt wallet detected · password required below' : qtEncrypted === false ? 'Unencrypted Qt wallet detected · processed only in this browser' : 'Qt/Core wallet.dat, encrypted Web backup, or ML-DSA JSON export'}</small></>}</button>{qtPrimaryAddress && <div className="qt-wallet-match"><span>Detected active address</span><strong>{qtPrimaryAddress}</strong></div>}{qtEncrypted && <PasswordField label="Existing Qt wallet password" value={qtPassword} onChange={setQtPassword} />}</>}
-          <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={dialog === 'create' || dialog === 'import' ? 6 : undefined} />
-          {(dialog === 'create' || dialog === 'import') && <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} minLength={6} />}
+          <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={dialog === 'create' || (dialog === 'import' && !restoringWebVault) ? 12 : 6} />
+          {(dialog === 'create' || dialog === 'import') && <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} minLength={dialog === 'import' && restoringWebVault ? 6 : 12} />}
+          {(dialog === 'create' || (dialog === 'import' && !restoringWebVault)) && <><PasswordStrength password={password} /><p className="password-container-warning">Use a unique password. Qt-compatible wallet.dat exports use Core's less memory-hard KDF, so a long password is essential and should never be reused.</p></>}
           {error && <p className="form-error">{error}</p>}<button className="button primary wide modal-submit" disabled={busy || fileBusy} aria-busy={busy}>{busy && <span className="button-spinner" aria-hidden="true" />}<span>{busy ? busyLabel : actionLabel}</span></button></form><p className="modal-foot">Wallet files and passwords stay inside this browser. Nothing entered here is sent to the gateway.</p></section></div>;
 }
 
@@ -1284,7 +1343,6 @@ async function downloadQtBackup(material: WalletMaterial): Promise<boolean> {
 export default function App() {
   const [vault, setVault] = useState<EncryptedVault | null | undefined>(undefined);
   const [wallets, setWallets] = useState<EncryptedVault[]>([]);
-  const [material, setMaterial] = useState<WalletMaterial | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [view, setView] = useState<View>('overview');
   const [status, setStatus] = useState<ChainStatus | null>(null);
@@ -1293,6 +1351,7 @@ export default function App() {
   const [fundedAddresses, setFundedAddresses] = useState<WalletAddressBalance[]>([]);
   const [networkError, setNetworkError] = useState('');
   const [toast, setToast] = useState('');
+  const [storageWarning, setStorageWarning] = useState('');
   const [receiveAddressCount, setReceiveAddressCount] = useState<number | null>(null);
   const [derivingAddress, setDerivingAddress] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
@@ -1301,7 +1360,6 @@ export default function App() {
   const [receiveMonitor, setReceiveMonitor] = useState<string | null>(null);
   const [sendMonitor, setSendMonitor] = useState<{ transaction: AddressTransaction; addresses: string[] } | null>(null);
   const [deleteWalletOpen, setDeleteWalletOpen] = useState(false);
-  const idleTimer = useRef<number | undefined>(undefined);
   const receiveMonitorTimer = useRef<number | undefined>(undefined);
   const refreshSequence = useRef(0);
   const hasAccountData = useRef(false);
@@ -1369,7 +1427,11 @@ export default function App() {
 
   useEffect(() => {
     loadVault().then(async (loaded) => {
-      setWallets(await loadVaults());
+      const inventory = await loadVaultInventory();
+      setWallets(inventory.wallets);
+      if (inventory.invalidRecordCount) {
+        setStorageWarning(`${inventory.invalidRecordCount} damaged local wallet record${inventory.invalidRecordCount === 1 ? ' was' : 's were'} ignored. Healthy wallets remain available; restore the affected wallet from a trusted backup.`);
+      }
       if (!loaded) {
         setVault(null);
         setBackupState(null);
@@ -1413,17 +1475,6 @@ export default function App() {
     });
   }, []);
   useEffect(() => { if (vault !== undefined) void refresh(); const timer = window.setInterval(refresh, 15_000); return () => window.clearInterval(timer); }, [refresh, vault]);
-  useEffect(() => {
-    if (!material) return;
-    const reset = () => {
-      window.clearTimeout(idleTimer.current);
-      idleTimer.current = window.setTimeout(() => setMaterial(null), 5 * 60_000);
-    };
-    const events = ['pointerdown', 'keydown', 'visibilitychange'] as const;
-    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
-    reset();
-    return () => { events.forEach((event) => window.removeEventListener(event, reset)); window.clearTimeout(idleTimer.current); };
-  }, [material]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 1800); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => () => window.clearTimeout(receiveMonitorTimer.current), []);
 
@@ -1437,7 +1488,7 @@ export default function App() {
 
   const title = useMemo(() => ({ overview: 'Overview', receive: 'Receive TSC', send: 'Send TSC', activity: 'Transactions', addresses: 'Wallet addresses', settings: 'Settings', wallets: 'Manage wallets' })[view], [view]);
 
-  function completed(nextVault: EncryptedVault, nextMaterial: WalletMaterial) {
+  function completed(nextVault: EncryptedVault) {
     refreshSequence.current += 1;
     setSummary(null);
     transactionsRef.current = [];
@@ -1447,7 +1498,6 @@ export default function App() {
     setSendMonitor(null);
     hasAccountData.current = false;
     setVault(nextVault);
-    setMaterial(nextMaterial);
     const count = nextVault.receiveAddressCount ?? 1;
     setReceiveAddressCount(count);
     void saveReceiveAddressCount(nextVault.walletId, count);
@@ -1456,24 +1506,23 @@ export default function App() {
     setToast('Wallet secured on this device');
     setView('overview');
   }
-  function created(nextVault: EncryptedVault, nextMaterial: WalletMaterial) {
+  function created(nextVault: EncryptedVault, _nextMaterial: WalletMaterial) {
     const state: WalletBackupState = { origin: 'created', backedUp: false };
     setBackupState(state);
     void saveBackupState(nextVault.walletId, state).catch(() => setToast('Wallet created; backup reminder could not be saved'));
-    completed(nextVault, nextMaterial);
+    completed(nextVault);
   }
-  function imported(nextVault: EncryptedVault, nextMaterial: WalletMaterial) {
+  function imported(nextVault: EncryptedVault, _nextMaterial: WalletMaterial) {
     const state: WalletBackupState = { origin: 'imported', backedUp: true };
     setBackupState(state);
     void saveBackupState(nextVault.walletId, state).catch(() => setToast('Wallet imported; local backup status could not be saved'));
-    completed(nextVault, nextMaterial);
+    completed(nextVault);
   }
   function unlocked(nextMaterial: WalletMaterial, migratedVault?: EncryptedVault) {
     if (migratedVault) {
       setVault(migratedVault);
       setWallets((current) => current.map((item) => item.walletId === migratedVault.walletId ? migratedVault : item));
     }
-    setMaterial(nextMaterial);
     const count = 'qt' in nextMaterial ? nextMaterial.qt.receiveAddressCount ?? 1 : 1;
     setReceiveAddressCount(count);
     void saveReceiveAddressCount((migratedVault ?? vault)?.walletId ?? nextMaterial.walletId, count);
@@ -1522,7 +1571,6 @@ export default function App() {
     setVault(next);
     setWallets(await loadVaults());
     setBackupState(next ? await loadBackupState(next.walletId) : null);
-    setMaterial(null);
     setReceiveAddressCount(next ? await loadReceiveAddressCount(next.walletId) ?? next.receiveAddressCount ?? 1 : null);
     setSummary(null);
     transactionsRef.current = [];
@@ -1540,7 +1588,6 @@ export default function App() {
     setSwitchingWallet(true);
     refreshSequence.current += 1;
     setAccountLoading(true);
-    setMaterial(null);
     setReceiveMonitor(null);
     setSendMonitor(null);
     try {
@@ -1588,12 +1635,16 @@ export default function App() {
         </div>
       </header>
       <div className={`chain-notice ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
+      {storageWarning && <div className="storage-warning" role="alert"><strong>Local storage recovery notice</strong><span>{storageWarning}</span><button type="button" onClick={() => setStorageWarning('')} aria-label="Dismiss storage warning">×</button></div>}
       {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
       {displayVault && view !== 'overview' && <ToolDrawer key={view} title={title} onClose={() => setView('overview')}>
         {view === 'receive' && <ReceivePanel vault={displayVault} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
         {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault)} />}
         {view === 'addresses' && <AddressBalancesPanel vault={displayVault} addresses={fundedAddresses} onCopy={copy} />}
-        {view === 'send' && <SendPanel vault={displayVault} fundedAddresses={fundedAddresses} onSent={async (pendingTransaction) => {
+        {view === 'send' && <SendPanel vault={displayVault} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
+          setVault(updatedVault);
+          setWallets((current) => current.map((item) => item.walletId === updatedVault.walletId ? updatedVault : item));
+        }} onSent={async (pendingTransaction, sentWalletAddresses) => {
           const alreadyTracked = transactionsRef.current.some((transaction) => transaction.txid === pendingTransaction.txid);
           const nextTransactions = prependLocalPending(transactionsRef.current, pendingTransaction);
           const nextSummary = summary && !alreadyTracked ? addPendingToSummary(summary, pendingTransaction) : summary;
@@ -1612,7 +1663,7 @@ export default function App() {
           setView('overview');
           setSendMonitor({
             transaction: pendingTransaction,
-            addresses: displayVault.addresses?.length ? [...displayVault.addresses] : [displayVault.address],
+            addresses: sentWalletAddresses,
           });
           window.setTimeout(() => void refresh(), 350);
         }} />}
