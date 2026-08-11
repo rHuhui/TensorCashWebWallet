@@ -1,7 +1,7 @@
 import type { AddressSummary, AddressTransaction, ChainStatus, WalletAddressBalance } from './types';
 import type { WalletUtxo } from './transaction';
 
-const DEFAULT_GATEWAY = import.meta.env.VITE_WALLET_GATEWAY_URL || 'https://tscwallet.xyz';
+const DEFAULT_GATEWAY = import.meta.env.VITE_WALLET_GATEWAY_URL || 'https://app.tscweb.xyz/wallet';
 const SETTING = 'tensorcash-wallet-gateway';
 
 export function getGatewayUrl(): string {

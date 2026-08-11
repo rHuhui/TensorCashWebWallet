@@ -92,7 +92,9 @@ npm run build
 npm run preview
 ```
 
-Open `http://127.0.0.1:4173/`. Production serves only `web/dist/`, never the Vite development server.
+Open `http://127.0.0.1:4173/wallet/`. The production build uses `/wallet/` as
+its public base path and serves only `web/dist/`, never the Vite development
+server.
 
 ## Configuration
 
@@ -106,9 +108,9 @@ The gateway reads process environment variables; no secrets are compiled into it
 | `TSCWALLET_RPC_URL` | TensorCash Core JSON-RPC | `http://127.0.0.1:<rpc-port>` |
 | `TSCWALLET_RPC_USER` | Dedicated RPC username | Secret, server-side only |
 | `TSCWALLET_RPC_PASSWORD` | Dedicated RPC password | Long random secret, server-side only |
-| `TSCWALLET_ALLOWED_ORIGINS` | Exact browser origins allowed to mutate state | `https://wallet.example` |
+| `TSCWALLET_ALLOWED_ORIGINS` | Exact browser origins allowed to mutate state | `https://app.example` |
 | `TSCWALLET_RPC_TIMEOUT` | Core request timeout in seconds | `8` by default |
-| `VITE_WALLET_GATEWAY_URL` | Browser-facing gateway baked into the build | Same-origin HTTPS URL |
+| `VITE_WALLET_GATEWAY_URL` | Browser-facing gateway baked into the build | `https://app.example/wallet` |
 | `VITE_SOURCE_URL` | Public source link baked into the build | Public repository URL |
 | `VITE_EXPLORER_URL` | Public transaction explorer baked into the build | Trusted HTTPS explorer |
 
