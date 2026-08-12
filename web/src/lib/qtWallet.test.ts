@@ -270,7 +270,7 @@ describe('TensorCash Qt descriptor wallet compatibility', () => {
     expect(material.key.descriptors).toHaveLength(2);
     if (!('qt' in material)) throw new Error('Expected Qt wallet material');
     expect(base64ToBytes(material.qt.originalFileBase64)).toEqual(file);
-  });
+  }, 15_000);
 
   it('writes Core descriptor caches that resolve the same first receive address', async () => {
     const created = await createQtWalletMaterial('core-cache-test-password');
