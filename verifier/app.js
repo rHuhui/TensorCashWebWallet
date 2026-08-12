@@ -66,8 +66,8 @@
     hashes.className = "file-hashes";
     sourceHash.className = "hash-line";
     hostedHash.className = "hash-line";
-    sourceLabel.textContent = "Open-source build";
-    hostedLabel.textContent = "Hosted wallet";
+    sourceLabel.textContent = "GitHub repository build SHA-256";
+    hostedLabel.textContent = "Hosted wallet SHA-256";
     sourceValue.textContent = file.sha256;
     hostedValue.textContent = "Calculating…";
     status.className = "file-status";
