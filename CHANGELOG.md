@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2 - 2026-08-12
+
+- Changed hosted-build verification so the visitor's browser downloads the
+  GitHub Pages build and live wallet files independently, computes both
+  SHA-256 values locally, and compares every file byte for byte.
+- Added a wallet-header security shortcut to the public build verifier.
+- Removed any wallet-server verification/download verdict from the trust path;
+  the wallet API remains unrelated to frontend verification.
+
 All notable changes to TensorCash Web Wallet are documented here. Releases use
 [Semantic Versioning](https://semver.org/) and Git tags use the `v` prefix.
 

@@ -191,18 +191,20 @@ This project uses [Semantic Versioning](https://semver.org/):
 - `PATCH` contains backward-compatible fixes and security hardening.
 - Git tags and GitHub releases use a `v` prefix, for example `v1.0.0`; package files use `1.0.0`.
 
-The current patch release is **v1.0.1**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
+The current patch release is **v1.0.2**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
 
 ### Hosted build verification
 
 The repository publishes a [GitHub Pages verifier](https://rhuhui.github.io/TensorCashWebWallet/)
 from `.github/workflows/pages.yml`.
-GitHub Actions performs a clean wallet build and publishes SHA-256 hashes for
-every generated HTML, JavaScript, CSS and cryptography runtime file. The page
-then fetches the current files from `https://app.tscweb.xyz/wallet/` and compares
-their bytes in the visitor's browser. Production CORS is restricted to the
-GitHub Pages origin and static wallet paths; wallet API mutation policy is not
-relaxed.
+GitHub Actions performs a clean wallet build and publishes both the generated
+HTML, JavaScript, CSS and cryptography runtime files and their inventory on
+GitHub Pages. The visitor's browser independently downloads every GitHub Pages
+build file and its matching file from `https://app.tscweb.xyz/wallet/`, computes
+both SHA-256 values locally, and compares the bytes. No wallet-server download
+or verification API returns the reference hash or verdict. Production CORS is
+restricted to the GitHub Pages origin and static wallet paths; wallet API
+mutation policy is not relaxed.
 
 A successful comparison proves that the frontend bytes served during that
 check match the build produced from the linked public commit. It does not

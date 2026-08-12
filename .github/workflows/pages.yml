@@ -29,8 +29,9 @@ jobs:
       - run: npm run build
       - name: Build verification page
         run: |
-          mkdir -p _site
+          mkdir -p _site/open-source-build
           cp verifier/index.html verifier/styles.css verifier/app.js _site/
+          cp -a web/dist/. _site/open-source-build/
           touch _site/.nojekyll
           node scripts/generate-verification-manifest.mjs web/dist _site/verification-manifest.json
       - uses: actions/configure-pages@v5

@@ -10,7 +10,7 @@
       content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://app.tscweb.xyz; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>TensorCash Wallet · Build Verifier</title>
-    <link rel="stylesheet" href="./styles.css?v=sha256-details-2" />
+    <link rel="stylesheet" href="./styles.css?v=dual-source-1" />
   </head>
   <body>
     <main class="shell">
@@ -41,9 +41,9 @@
           >
         </h1>
         <p>
-          Your browser downloads the live wallet files and compares them against
-          the SHA-256 manifest produced by GitHub Actions from the public
-          repository.
+          Your browser independently downloads every file from the GitHub Pages
+          build and the live wallet, calculates both SHA-256 values locally,
+          and compares the bytes without asking the wallet server for a verdict.
         </p>
         <div class="actions">
           <button class="verify-button" id="verify-button" type="button">
@@ -63,8 +63,8 @@
           <div class="result-label" id="result-label">READY TO VERIFY</div>
           <h2 id="result-title">Ready to check the live build</h2>
           <p id="result-message">
-            Select “Verify now” to download the hosted wallet and calculate each
-            file hash.
+            Select “Verify now” to download both independent copies and calculate
+            every file hash in this browser.
           </p>
         </div>
         <div class="result-progress" aria-hidden="true">
@@ -127,8 +127,8 @@
           <div>
             <h3>Independent GitHub build</h3>
             <p>
-              GitHub Actions builds the wallet from a public commit with locked
-              dependencies, then publishes a file-hash manifest.
+              GitHub Actions builds the public commit with locked dependencies,
+              then publishes both the build files and their inventory on GitHub Pages.
             </p>
           </div>
         </article>
@@ -137,9 +137,9 @@
           <div>
             <h3>Direct live-wallet download</h3>
             <p>
-              This page reads the public static files currently served by
-              app.tscweb.xyz instead of trusting a result reported by the wallet
-              server.
+              This browser reads each GitHub Pages build file and its matching
+              app.tscweb.xyz file directly. No wallet-server download or verification
+              API participates in the comparison.
             </p>
           </div>
         </article>
@@ -148,8 +148,8 @@
           <div>
             <h3>Byte-for-byte comparison</h3>
             <p>
-              Verification passes only when the SHA-256 hash and size of every
-              expected file match exactly.
+              Verification passes only when the locally calculated SHA-256 and size
+              of every GitHub Pages file match the live wallet file exactly.
             </p>
           </div>
         </article>
@@ -158,14 +158,14 @@
       <aside class="scope-note">
         <strong>Scope of this verification</strong>
         <p>
-          A successful result means the frontend files returned by the hosted
-          wallet matched the build artifacts for the displayed GitHub commit at
-          the time of the check. It does not replace a source-code security
-          audit or prove that DNS, TLS, browser extensions, or the user’s device
-          are secure.
+          A successful result means the frontend bytes returned to this browser by
+          app.tscweb.xyz matched the independently hosted GitHub Pages build for the
+          displayed commit at the time of this request. A hostile server can still
+          vary responses by client or request, so this does not replace source review
+          or prove that DNS, TLS, browser extensions, or the user’s device are secure.
         </p>
       </aside>
     </main>
-    <script src="./app.js?v=sha256-details-2" defer></script>
+    <script src="./app.js?v=dual-source-1" defer></script>
   </body>
 </html>

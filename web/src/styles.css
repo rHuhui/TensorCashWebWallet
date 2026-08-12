@@ -43,9 +43,9 @@ a { color: inherit; }
 .brand small { color: #77747a; font-size: 10px; letter-spacing: 2px; font-weight: 800; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .topbar-right > a { font-size: 13px; font-weight: 700; text-decoration: none; margin-left: 8px; }
-.topbar-right > .github-link { width: 36px; height: 36px; display: grid; place-items: center; margin-left: 4px; border: 1px solid #d9d5d1; border-radius: 50%; background: #fff; color: #373238; transition: color .2s ease, border-color .2s ease, background .2s ease, transform .2s ease, box-shadow .2s ease; }
-.topbar-right > .github-link:hover, .topbar-right > .github-link:focus-visible { border-color: var(--wine); background: var(--wine); color: #fff; box-shadow: 0 8px 22px rgba(116,30,50,.18); transform: translateY(-1px); outline: none; }
-.github-link svg { width: 19px; height: 19px; }
+.topbar-right > .github-link, .topbar-right > .security-link { width: 36px; height: 36px; display: grid; place-items: center; margin-left: 4px; border: 1px solid #d9d5d1; border-radius: 50%; background: #fff; color: #373238; transition: color .2s ease, border-color .2s ease, background .2s ease, transform .2s ease, box-shadow .2s ease; }
+.topbar-right > .github-link:hover, .topbar-right > .github-link:focus-visible, .topbar-right > .security-link:hover, .topbar-right > .security-link:focus-visible { border-color: var(--wine); background: var(--wine); color: #fff; box-shadow: 0 8px 22px rgba(116,30,50,.18); transform: translateY(-1px); outline: none; }
+.github-link svg, .security-link svg { width: 19px; height: 19px; }
 .status-badge { padding: 8px 11px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; font-weight: 750; color: #59565b; background: white; display: inline-flex; align-items: center; gap: 7px; }
 .status-badge i { width: 7px; height: 7px; border-radius: 50%; background: #9b999c; box-shadow: 0 0 0 4px rgba(155,153,156,.12); }
 .status-badge.ready i { background: var(--green); box-shadow: 0 0 0 4px rgba(24,128,93,.12); }

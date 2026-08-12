@@ -44,7 +44,6 @@ const manifest = {
   source: commit === 'local-build'
     ? `https://github.com/${repository}`
     : `https://github.com/${repository}/tree/${commit}`,
-  target: 'https://app.tscweb.xyz/wallet/',
   files,
 };
 

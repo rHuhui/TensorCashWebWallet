@@ -70,6 +70,7 @@ type View = 'overview' | 'receive' | 'send' | 'activity' | 'addresses' | 'settin
 type Dialog = 'create' | 'import' | 'unlock' | 'backup' | null;
 
 const SOURCE_URL = import.meta.env.VITE_SOURCE_URL || 'https://github.com/rHuhui/TensorCashWebWallet';
+const VERIFY_URL = import.meta.env.VITE_VERIFY_URL || 'https://rhuhui.github.io/TensorCashWebWallet/';
 const EXPLORER_URL = (import.meta.env.VITE_EXPLORER_URL || 'https://tscscan.xyz').replace(/\/$/, '');
 const APP_VERSION = packageMetadata.version;
 const TSC = 100_000_000;
@@ -165,6 +166,15 @@ function GithubIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.23c-3.23.7-3.91-1.37-3.91-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.39.97.1-.75.4-1.27.74-1.56-2.58-.29-5.29-1.29-5.29-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.16 1.18A10.95 10.95 0 0 1 12 6.11c.98 0 1.95.13 2.87.39 2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.4-2.72 5.38-5.3 5.67.42.36.79 1.07.79 2.16v3.25c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z" />
+    </svg>
+  );
+}
+
+function SecurityIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M12 2.7 20 6v5.5c0 4.9-3.2 8.1-8 9.8-4.8-1.7-8-4.9-8-9.8V6l8-3.3Z" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" d="m8.5 12.1 2.2 2.2 4.9-5" />
     </svg>
   );
 }
@@ -1632,6 +1642,7 @@ export default function App() {
           {displayVault && <div className="wallet-switcher-group"><label className={`wallet-switcher ${switchingWallet ? 'busy' : ''}`}><span className="sr-only">Active wallet</span><select value={displayVault.walletId} disabled={switchingWallet} onChange={(event) => void switchWallet(event.target.value)}>{wallets.map((item) => <option value={item.walletId} key={item.walletId}>{walletLabel(item)}</option>)}</select>{switchingWallet && <i className="button-spinner dark" />}</label><button className="wallet-manage-button" aria-label="Manage wallets" onClick={() => setView('wallets')}><span>◫</span><b>Manage</b></button></div>}
           {displayVault && <button className="compact-address" onClick={() => copy(currentReceiveAddress(displayVault))}>{short(currentReceiveAddress(displayVault))} <span>⧉</span></button>}
           <a className="github-link" href={SOURCE_URL} target="_blank" rel="noreferrer" aria-label="Open TensorCash Wallet on GitHub" title="GitHub"><GithubIcon /></a>
+          <a className="security-link" href={VERIFY_URL} target="_blank" rel="noreferrer" aria-label="Verify the hosted wallet build" title="Verify hosted wallet"><SecurityIcon /></a>
         </div>
       </header>
       <div className={`chain-notice ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
