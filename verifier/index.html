@@ -5,68 +5,167 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#701c30" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://app.tscweb.xyz; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://app.tscweb.xyz; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
     <title>TensorCash Wallet · Build Verifier</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=sha256-details-1" />
   </head>
   <body>
     <main class="shell">
       <nav class="topbar" aria-label="Verification navigation">
-        <a class="brand" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">
+        <a
+          class="brand"
+          href="https://github.com/rHuhui/TensorCashWebWallet"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           <span class="brand-mark" aria-hidden="true">T</span>
           <span><strong>TensorCash</strong><small>WALLET VERIFIER</small></span>
         </a>
-        <a class="source-link" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">View source <span aria-hidden="true">↗</span></a>
+        <a
+          class="source-link"
+          href="https://github.com/rHuhui/TensorCashWebWallet"
+          target="_blank"
+          rel="noopener noreferrer"
+          >View source <span aria-hidden="true">↗</span></a
+        >
       </nav>
 
       <section class="hero">
         <div class="eyebrow"><span></span> INDEPENDENT CLIENT-SIDE CHECK</div>
-        <h1>Verify that the hosted wallet<br /><em>matches the open-source build</em></h1>
-        <p>Your browser downloads the live wallet files and compares them against the SHA-256 manifest produced by GitHub Actions from the public repository.</p>
+        <h1>
+          Verify that the hosted wallet<br /><em
+            >matches the open-source build</em
+          >
+        </h1>
+        <p>
+          Your browser downloads the live wallet files and compares them against
+          the SHA-256 manifest produced by GitHub Actions from the public
+          repository.
+        </p>
         <div class="actions">
-          <button class="verify-button" id="verify-button" type="button">Verify now</button>
-          <span class="privacy-note">Every check runs locally in this browser</span>
+          <button class="verify-button" id="verify-button" type="button">
+            Verify now
+          </button>
+          <span class="privacy-note"
+            >Every check runs locally in this browser</span
+          >
         </div>
       </section>
 
       <section class="result-card is-idle" id="result-card" aria-live="polite">
-        <div class="result-orb" id="result-orb" aria-hidden="true"><span>✓</span></div>
+        <div class="result-orb" id="result-orb" aria-hidden="true">
+          <span>✓</span>
+        </div>
         <div class="result-copy">
           <div class="result-label" id="result-label">READY TO VERIFY</div>
           <h2 id="result-title">Ready to check the live build</h2>
-          <p id="result-message">Select “Verify now” to download the hosted wallet and calculate each file hash.</p>
+          <p id="result-message">
+            Select “Verify now” to download the hosted wallet and calculate each
+            file hash.
+          </p>
         </div>
-        <div class="result-progress" aria-hidden="true"><span id="result-progress"></span></div>
+        <div class="result-progress" aria-hidden="true">
+          <span id="result-progress"></span>
+        </div>
       </section>
 
       <section class="facts" aria-label="Build identity">
-        <article><span>Hosted wallet</span><strong><a href="https://app.tscweb.xyz/wallet/" target="_blank" rel="noopener noreferrer">app.tscweb.xyz/wallet</a></strong></article>
-        <article><span>Open-source version</span><strong id="manifest-version">—</strong></article>
-        <article><span>Source commit</span><strong><a id="manifest-commit" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">—</a></strong></article>
-        <article><span>File results</span><strong id="file-summary">—</strong></article>
+        <article>
+          <span>Hosted wallet</span
+          ><strong
+            ><a
+              href="https://app.tscweb.xyz/wallet/"
+              target="_blank"
+              rel="noopener noreferrer"
+              >app.tscweb.xyz/wallet</a
+            ></strong
+          >
+        </article>
+        <article>
+          <span>Open-source version</span
+          ><strong id="manifest-version">—</strong>
+        </article>
+        <article>
+          <span>Source commit</span
+          ><strong
+            ><a
+              id="manifest-commit"
+              href="https://github.com/rHuhui/TensorCashWebWallet"
+              target="_blank"
+              rel="noopener noreferrer"
+              >—</a
+            ></strong
+          >
+        </article>
+        <article>
+          <span>File results</span><strong id="file-summary">—</strong>
+        </article>
       </section>
 
       <section class="details-card">
         <header>
-          <div><span class="section-label">FILE BY FILE</span><h2>Build verification results</h2></div>
+          <div>
+            <span class="section-label">FILE BY FILE</span>
+            <h2>Build verification results</h2>
+          </div>
           <span class="method">SHA-256</span>
         </header>
         <div class="file-list" id="file-list">
-          <div class="empty-state">Once verification starts, results for the HTML, JavaScript, CSS, and cryptographic runtime will appear here.</div>
+          <div class="empty-state">
+            Once verification starts, results for the HTML, JavaScript, CSS, and
+            cryptographic runtime will appear here.
+          </div>
         </div>
       </section>
 
       <section class="explain">
-        <article><span class="step">01</span><div><h3>Independent GitHub build</h3><p>GitHub Actions builds the wallet from a public commit with locked dependencies, then publishes a file-hash manifest.</p></div></article>
-        <article><span class="step">02</span><div><h3>Direct live-wallet download</h3><p>This page reads the public static files currently served by app.tscweb.xyz instead of trusting a result reported by the wallet server.</p></div></article>
-        <article><span class="step">03</span><div><h3>Byte-for-byte comparison</h3><p>Verification passes only when the SHA-256 hash and size of every expected file match exactly.</p></div></article>
+        <article>
+          <span class="step">01</span>
+          <div>
+            <h3>Independent GitHub build</h3>
+            <p>
+              GitHub Actions builds the wallet from a public commit with locked
+              dependencies, then publishes a file-hash manifest.
+            </p>
+          </div>
+        </article>
+        <article>
+          <span class="step">02</span>
+          <div>
+            <h3>Direct live-wallet download</h3>
+            <p>
+              This page reads the public static files currently served by
+              app.tscweb.xyz instead of trusting a result reported by the wallet
+              server.
+            </p>
+          </div>
+        </article>
+        <article>
+          <span class="step">03</span>
+          <div>
+            <h3>Byte-for-byte comparison</h3>
+            <p>
+              Verification passes only when the SHA-256 hash and size of every
+              expected file match exactly.
+            </p>
+          </div>
+        </article>
       </section>
 
       <aside class="scope-note">
         <strong>Scope of this verification</strong>
-        <p>A successful result means the frontend files returned by the hosted wallet matched the build artifacts for the displayed GitHub commit at the time of the check. It does not replace a source-code security audit or prove that DNS, TLS, browser extensions, or the user’s device are secure.</p>
+        <p>
+          A successful result means the frontend files returned by the hosted
+          wallet matched the build artifacts for the displayed GitHub commit at
+          the time of the check. It does not replace a source-code security
+          audit or prove that DNS, TLS, browser extensions, or the user’s device
+          are secure.
+        </p>
       </aside>
     </main>
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=sha256-details-1" defer></script>
   </body>
 </html>
