@@ -193,6 +193,22 @@ This project uses [Semantic Versioning](https://semver.org/):
 
 The current patch release is **v1.0.1**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
 
+### Hosted build verification
+
+The repository publishes a [GitHub Pages verifier](https://rhuhui.github.io/TensorCashWebWallet/)
+from `.github/workflows/pages.yml`.
+GitHub Actions performs a clean wallet build and publishes SHA-256 hashes for
+every generated HTML, JavaScript, CSS and cryptography runtime file. The page
+then fetches the current files from `https://app.tscweb.xyz/wallet/` and compares
+their bytes in the visitor's browser. Production CORS is restricted to the
+GitHub Pages origin and static wallet paths; wallet API mutation policy is not
+relaxed.
+
+A successful comparison proves that the frontend bytes served during that
+check match the build produced from the linked public commit. It does not
+replace source review or attest DNS, TLS, browser extensions, the user's device,
+or the stateless backend.
+
 ## Core compatibility
 
 v1.0.1 targets **TensorCash Core v1.1.0** wallet descriptors and mainnet RPC

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#701c30" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://app.tscweb.xyz; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>TensorCash Wallet · Build Verifier</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <nav class="topbar" aria-label="Verification navigation">
+        <a class="brand" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">
+          <span class="brand-mark" aria-hidden="true">T</span>
+          <span><strong>TensorCash</strong><small>WALLET VERIFIER</small></span>
+        </a>
+        <a class="source-link" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">查看公开源码 <span aria-hidden="true">↗</span></a>
+      </nav>
+
+      <section class="hero">
+        <div class="eyebrow"><span></span> INDEPENDENT CLIENT-SIDE CHECK</div>
+        <h1>验证托管钱包是否来自<br /><em>公开源码构建</em></h1>
+        <p>你的浏览器会直接下载线上钱包文件，并与 GitHub Actions 从公开仓库干净构建的 SHA-256 清单逐项比较。</p>
+        <div class="actions">
+          <button class="verify-button" id="verify-button" type="button">立即验证</button>
+          <span class="privacy-note">所有校验均在当前浏览器中完成</span>
+        </div>
+      </section>
+
+      <section class="result-card is-idle" id="result-card" aria-live="polite">
+        <div class="result-orb" id="result-orb" aria-hidden="true"><span>✓</span></div>
+        <div class="result-copy">
+          <div class="result-label" id="result-label">READY TO VERIFY</div>
+          <h2 id="result-title">等待开始校验</h2>
+          <p id="result-message">点击“立即验证”，获取当前线上钱包并逐个计算文件哈希。</p>
+        </div>
+        <div class="result-progress" aria-hidden="true"><span id="result-progress"></span></div>
+      </section>
+
+      <section class="facts" aria-label="Build identity">
+        <article><span>线上钱包</span><strong><a href="https://app.tscweb.xyz/wallet/" target="_blank" rel="noopener noreferrer">app.tscweb.xyz/wallet</a></strong></article>
+        <article><span>开源版本</span><strong id="manifest-version">—</strong></article>
+        <article><span>源码提交</span><strong><a id="manifest-commit" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">—</a></strong></article>
+        <article><span>文件结果</span><strong id="file-summary">—</strong></article>
+      </section>
+
+      <section class="details-card">
+        <header>
+          <div><span class="section-label">FILE BY FILE</span><h2>文件校验结果</h2></div>
+          <span class="method">SHA-256</span>
+        </header>
+        <div class="file-list" id="file-list">
+          <div class="empty-state">开始验证后，这里会列出 HTML、JavaScript、CSS 和密码学运行库的对比结果。</div>
+        </div>
+      </section>
+
+      <section class="explain">
+        <article><span class="step">01</span><div><h3>GitHub 独立构建</h3><p>GitHub Actions 使用公开提交和锁定依赖构建钱包，并发布文件哈希清单。</p></div></article>
+        <article><span class="step">02</span><div><h3>浏览器直连线上钱包</h3><p>验证页直接读取当前由 app.tscweb.xyz 返回的公开静态文件，不采用服务器自报结果。</p></div></article>
+        <article><span class="step">03</span><div><h3>逐字节对比</h3><p>只有所有预期文件的 SHA-256 都完全一致，页面才会显示验证通过。</p></div></article>
+      </section>
+
+      <aside class="scope-note">
+        <strong>校验范围说明</strong>
+        <p>通过表示检查时线上返回的前端文件与所示 GitHub 提交的构建产物一致。它不能替代源码安全审计，也不能证明 DNS、TLS、浏览器扩展或用户设备绝对安全。</p>
+      </aside>
+    </main>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
