@@ -58,18 +58,18 @@
 
   async function verify() {
     elements.button.disabled = true;
-    elements.button.textContent = '正在验证…';
+    elements.button.textContent = 'Verifying…';
     elements.files.replaceChildren();
     elements.progress.style.width = '0%';
     elements.summary.textContent = '—';
-    resultState('running', '正在读取公开构建清单', '随后将直接下载线上钱包文件并计算 SHA-256。');
+    resultState('running', 'Loading the public build manifest', 'The verifier will then download the live wallet files and calculate their SHA-256 hashes.');
 
     try {
       const manifestResponse = await fetch(`${manifestUrl}?t=${Date.now()}`, { cache: 'no-store' });
-      if (!manifestResponse.ok) throw new Error(`无法读取 GitHub 构建清单（HTTP ${manifestResponse.status}）`);
+      if (!manifestResponse.ok) throw new Error(`Could not load the GitHub build manifest (HTTP ${manifestResponse.status})`);
       const manifest = await manifestResponse.json();
       if (manifest.schema !== 1 || !Array.isArray(manifest.files) || !manifest.files.length) {
-        throw new Error('GitHub 构建清单格式无效');
+        throw new Error('The GitHub build manifest is invalid');
       }
 
       const target = new URL(manifest.target);
@@ -83,7 +83,7 @@
       for (let index = 0; index < manifest.files.length; index += 1) {
         const file = manifest.files[index];
         const row = rows[index];
-        resultState('running', `正在校验 ${file.path}`, `${index + 1} / ${manifest.files.length} 个文件`);
+        resultState('running', `Checking ${file.path}`, `File ${index + 1} of ${manifest.files.length}`);
         try {
           const url = new URL(file.path, target);
           url.searchParams.set('wallet-build-verifier', String(Date.now()));
@@ -106,23 +106,23 @@
         elements.progress.style.width = `${Math.round(((index + 1) / manifest.files.length) * 100)}%`;
       }
 
-      elements.summary.textContent = `${matches} / ${manifest.files.length} 匹配`;
+      elements.summary.textContent = `${matches} / ${manifest.files.length} matched`;
       if (failures === 0) {
-        resultState('success', '线上钱包与公开构建完全一致', `已验证 v${manifest.version} 的 ${matches} 个文件；所有 SHA-256 均匹配。`);
+        resultState('success', 'The hosted wallet matches the open-source build', `Verified ${matches} files for v${manifest.version}; every SHA-256 hash and file size matched.`);
       } else {
-        resultState('failure', '线上钱包与公开构建不一致', `${failures} 个文件缺失、无法读取或哈希不匹配。请暂勿进行敏感操作。`);
+        resultState('failure', 'The hosted wallet does not match the open-source build', `${failures} files were missing, unreadable, or did not match. Avoid sensitive operations until this is resolved.`);
       }
     } catch (problem) {
-      resultState('failure', '无法完成验证', problem instanceof Error ? problem.message : String(problem));
-      elements.summary.textContent = '验证失败';
+      resultState('failure', 'Verification could not be completed', problem instanceof Error ? problem.message : String(problem));
+      elements.summary.textContent = 'Verification failed';
     } finally {
       elements.button.disabled = false;
-      elements.button.textContent = '重新验证';
+      elements.button.textContent = 'Verify again';
     }
   }
 
   if (!window.crypto?.subtle) {
-    resultState('failure', '当前浏览器不支持安全哈希', '请使用支持 Web Crypto 的现代浏览器，并通过 HTTPS 打开此页面。');
+    resultState('failure', 'Secure hashing is unavailable in this browser', 'Open this page over HTTPS in a modern browser that supports the Web Crypto API.');
     elements.button.disabled = true;
   } else {
     elements.button.addEventListener('click', verify);

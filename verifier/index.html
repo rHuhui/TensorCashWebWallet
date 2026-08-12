@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -16,16 +16,16 @@
           <span class="brand-mark" aria-hidden="true">T</span>
           <span><strong>TensorCash</strong><small>WALLET VERIFIER</small></span>
         </a>
-        <a class="source-link" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">查看公开源码 <span aria-hidden="true">↗</span></a>
+        <a class="source-link" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">View source <span aria-hidden="true">↗</span></a>
       </nav>
 
       <section class="hero">
         <div class="eyebrow"><span></span> INDEPENDENT CLIENT-SIDE CHECK</div>
-        <h1>验证托管钱包是否来自<br /><em>公开源码构建</em></h1>
-        <p>你的浏览器会直接下载线上钱包文件，并与 GitHub Actions 从公开仓库干净构建的 SHA-256 清单逐项比较。</p>
+        <h1>Verify that the hosted wallet<br /><em>matches the open-source build</em></h1>
+        <p>Your browser downloads the live wallet files and compares them against the SHA-256 manifest produced by GitHub Actions from the public repository.</p>
         <div class="actions">
-          <button class="verify-button" id="verify-button" type="button">立即验证</button>
-          <span class="privacy-note">所有校验均在当前浏览器中完成</span>
+          <button class="verify-button" id="verify-button" type="button">Verify now</button>
+          <span class="privacy-note">Every check runs locally in this browser</span>
         </div>
       </section>
 
@@ -33,38 +33,38 @@
         <div class="result-orb" id="result-orb" aria-hidden="true"><span>✓</span></div>
         <div class="result-copy">
           <div class="result-label" id="result-label">READY TO VERIFY</div>
-          <h2 id="result-title">等待开始校验</h2>
-          <p id="result-message">点击“立即验证”，获取当前线上钱包并逐个计算文件哈希。</p>
+          <h2 id="result-title">Ready to check the live build</h2>
+          <p id="result-message">Select “Verify now” to download the hosted wallet and calculate each file hash.</p>
         </div>
         <div class="result-progress" aria-hidden="true"><span id="result-progress"></span></div>
       </section>
 
       <section class="facts" aria-label="Build identity">
-        <article><span>线上钱包</span><strong><a href="https://app.tscweb.xyz/wallet/" target="_blank" rel="noopener noreferrer">app.tscweb.xyz/wallet</a></strong></article>
-        <article><span>开源版本</span><strong id="manifest-version">—</strong></article>
-        <article><span>源码提交</span><strong><a id="manifest-commit" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">—</a></strong></article>
-        <article><span>文件结果</span><strong id="file-summary">—</strong></article>
+        <article><span>Hosted wallet</span><strong><a href="https://app.tscweb.xyz/wallet/" target="_blank" rel="noopener noreferrer">app.tscweb.xyz/wallet</a></strong></article>
+        <article><span>Open-source version</span><strong id="manifest-version">—</strong></article>
+        <article><span>Source commit</span><strong><a id="manifest-commit" href="https://github.com/rHuhui/TensorCashWebWallet" target="_blank" rel="noopener noreferrer">—</a></strong></article>
+        <article><span>File results</span><strong id="file-summary">—</strong></article>
       </section>
 
       <section class="details-card">
         <header>
-          <div><span class="section-label">FILE BY FILE</span><h2>文件校验结果</h2></div>
+          <div><span class="section-label">FILE BY FILE</span><h2>Build verification results</h2></div>
           <span class="method">SHA-256</span>
         </header>
         <div class="file-list" id="file-list">
-          <div class="empty-state">开始验证后，这里会列出 HTML、JavaScript、CSS 和密码学运行库的对比结果。</div>
+          <div class="empty-state">Once verification starts, results for the HTML, JavaScript, CSS, and cryptographic runtime will appear here.</div>
         </div>
       </section>
 
       <section class="explain">
-        <article><span class="step">01</span><div><h3>GitHub 独立构建</h3><p>GitHub Actions 使用公开提交和锁定依赖构建钱包，并发布文件哈希清单。</p></div></article>
-        <article><span class="step">02</span><div><h3>浏览器直连线上钱包</h3><p>验证页直接读取当前由 app.tscweb.xyz 返回的公开静态文件，不采用服务器自报结果。</p></div></article>
-        <article><span class="step">03</span><div><h3>逐字节对比</h3><p>只有所有预期文件的 SHA-256 都完全一致，页面才会显示验证通过。</p></div></article>
+        <article><span class="step">01</span><div><h3>Independent GitHub build</h3><p>GitHub Actions builds the wallet from a public commit with locked dependencies, then publishes a file-hash manifest.</p></div></article>
+        <article><span class="step">02</span><div><h3>Direct live-wallet download</h3><p>This page reads the public static files currently served by app.tscweb.xyz instead of trusting a result reported by the wallet server.</p></div></article>
+        <article><span class="step">03</span><div><h3>Byte-for-byte comparison</h3><p>Verification passes only when the SHA-256 hash and size of every expected file match exactly.</p></div></article>
       </section>
 
       <aside class="scope-note">
-        <strong>校验范围说明</strong>
-        <p>通过表示检查时线上返回的前端文件与所示 GitHub 提交的构建产物一致。它不能替代源码安全审计，也不能证明 DNS、TLS、浏览器扩展或用户设备绝对安全。</p>
+        <strong>Scope of this verification</strong>
+        <p>A successful result means the frontend files returned by the hosted wallet matched the build artifacts for the displayed GitHub commit at the time of the check. It does not replace a source-code security audit or prove that DNS, TLS, browser extensions, or the user’s device are secure.</p>
       </aside>
     </main>
     <script src="./app.js" defer></script>
