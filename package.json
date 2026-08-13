@@ -1,7 +1,7 @@
 {
   "name": "tensorcash-web-wallet",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "license": "MIT",
   "repository": {
     "type": "git",

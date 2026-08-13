@@ -12,6 +12,7 @@ import {
   p2wpkhScript,
   requiresHighFeeConfirmation,
   signP2wpkhTransaction,
+  supportedRecipient,
 } from './transaction';
 
 describe('standard TSC transaction signing', () => {
@@ -57,6 +58,37 @@ describe('standard TSC transaction signing', () => {
     expect(signed.vsize).toBeLessThanOrEqual(plan.estimatedVsize);
     expect(plan.feeSats).toBeGreaterThanOrEqual(signed.vsize * 2);
     expect(plan.outputs.map((output) => output.address)).toEqual([destination.address, change.address]);
+  });
+
+  it('builds and signs to a standard TensorCash P2WSH recipient', async () => {
+    const source = await createQtWalletMaterial('p2wsh-source-password');
+    const p2wshAddress = 'tc1qrnv0anr9weeassr8jgmd5erz7jgwpwuusrjcz5dl83ay6c5hqypqx8ad69';
+    const destination = supportedRecipient(p2wshAddress);
+    expect(bytesToHex(destination.scriptPubKey)).toBe(
+      '00201cd8fecc657673d840679236da6462f490e0bb9c80e58151bf3c7a4d62970102',
+    );
+    const plan = planP2wpkhTransaction(
+      [{
+        address: source.address,
+        txid: '77'.repeat(32),
+        vout: 0,
+        value_sats: 100_000_000,
+        script_pubkey: bytesToHex(p2wpkhScript(source.address)),
+        height: 100,
+        confirmations: 101,
+        coinbase: false,
+      }],
+      p2wshAddress,
+      25_000_000,
+      source.address,
+      2,
+      200,
+    );
+    const signed = signP2wpkhTransaction(plan, (address) => resolveQtP2wpkhSpendKey(source, address));
+    expect(plan.recipient).toBe(p2wshAddress);
+    expect(bytesToHex(plan.outputs[0].scriptPubKey)).toBe(bytesToHex(destination.scriptPubKey));
+    expect(signed.hex).toContain(bytesToHex(destination.scriptPubKey));
+    expect(plan.feeSats).toBeGreaterThanOrEqual(signed.vsize * 2);
   });
 
   it('calculates MAX from every spendable input after the one-output fee', async () => {

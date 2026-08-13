@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.4 - 2026-08-13
+
+- Add standard TensorCash P2WSH recipient support while preserving P2WPKH-only
+  wallet inputs and change outputs.
+- Validate witness-v0 recipient programs and reject unsupported address types,
+  mixed-case addresses, and invalid network prefixes before signing.
+- Calculate destination dust thresholds and transaction fees from the exact
+  recipient script size, including P2WSH outputs.
+- Add a regression vector for P2WSH output construction, local P2WPKH input
+  signing, and reviewed fee-rate enforcement.
+
 ## 1.0.3 - 2026-08-13
 
 - Keep indexed wallet balances and confirmed transaction history available when

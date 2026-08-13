@@ -7,6 +7,7 @@ import { bytesToHex, compactSize, concatBytes, hexToBytes, wipe } from './bytes'
 export const SATOSHIS_PER_TSC = 100_000_000;
 export const COINBASE_MATURITY = 100;
 export const P2WPKH_DUST_SATS = 294;
+export const P2WSH_DUST_SATS = 330;
 export const MIN_FEE_RATE_SAT_VB = 1;
 export const MAX_FEE_RATE_SAT_VB = 100;
 
@@ -150,6 +151,43 @@ export function decodeP2wpkhAddress(address: string): Uint8Array {
   return program;
 }
 
+interface SupportedRecipient {
+  normalizedAddress: string;
+  scriptPubKey: Uint8Array;
+  dustSats: number;
+}
+
+/**
+ * Decode the standard witness-v0 destinations accepted by TensorCash Core.
+ * Wallet inputs and change remain P2WPKH; a recipient may additionally be a
+ * P2WSH script destination because creating that output does not require the
+ * wallet to know or spend the recipient's witness script.
+ */
+export function supportedRecipient(address: string): SupportedRecipient {
+  const candidate = address.trim();
+  if (candidate !== candidate.toLowerCase() && candidate !== candidate.toUpperCase()) {
+    throw new Error('TensorCash addresses cannot mix upper and lower case');
+  }
+  let decoded: ReturnType<typeof bech32.decode>;
+  try {
+    decoded = bech32.decode(candidate.toLowerCase() as `${string}1${string}`, 90);
+  } catch {
+    throw new Error('Enter a valid TensorCash tc1q address');
+  }
+  if (decoded.prefix !== 'tc' || decoded.words[0] !== 0) {
+    throw new Error('Only TensorCash witness-v0 tc1q addresses are supported');
+  }
+  const program = Uint8Array.from(bech32.fromWords(decoded.words.slice(1)));
+  if (program.length !== 20 && program.length !== 32) {
+    throw new Error('Only TensorCash P2WPKH and P2WSH addresses are supported');
+  }
+  return {
+    normalizedAddress: candidate.toLowerCase(),
+    scriptPubKey: concatBytes(Uint8Array.of(0x00, program.length), program),
+    dustSats: program.length === 20 ? P2WPKH_DUST_SATS : P2WSH_DUST_SATS,
+  };
+}
+
 export function checkedWalletChangeAddress(changeAddress: string, ownedAddresses: string[]): string {
   const normalized = changeAddress.trim().toLowerCase();
   const owned = new Set(ownedAddresses.map((address) => address.toLowerCase()));
@@ -189,10 +227,19 @@ export function feeRateFromTscPerKvb(value: string | null | undefined): number {
   return satVb;
 }
 
-function estimatedP2wpkhVsize(inputs: number, outputs: number): number {
+function estimatedP2wpkhVsize(inputs: number, outputScriptLengths: number[]): number {
   // Maximum DER signature size is used so the signed transaction never pays
   // less than the reviewed fee rate.
-  const stripped = 4 + compactSize(inputs).length + inputs * 41 + compactSize(outputs).length + outputs * 31 + 4;
+  const serializedOutputs = outputScriptLengths.reduce(
+    (total, scriptLength) => total + 8 + compactSize(scriptLength).length + scriptLength,
+    0,
+  );
+  const stripped = 4
+    + compactSize(inputs).length
+    + inputs * 41
+    + compactSize(outputScriptLengths.length).length
+    + serializedOutputs
+    + 4;
   const witness = 2 + inputs * (1 + 1 + 73 + 1 + 33);
   return Math.ceil((stripped * 4 + witness) / 4);
 }
@@ -208,7 +255,10 @@ export function maximumP2wpkhSendAmount(utxos: WalletUtxo[], feeRateSatVb: numbe
   const available = checkedUtxos(utxos);
   const totalSats = available.reduce((sum, utxo) => sum + utxo.value_sats, 0);
   if (!Number.isSafeInteger(totalSats)) throw new Error('Spendable balance is outside the supported range');
-  const feeSats = estimatedP2wpkhVsize(available.length, 1) * feeRateSatVb;
+  // MAX is displayed before a recipient is necessarily entered. Reserve for
+  // the larger supported P2WSH output so the amount is safe for either address
+  // type. The final review always recalculates against the exact script.
+  const feeSats = estimatedP2wpkhVsize(available.length, [34]) * feeRateSatVb;
   const amountSats = totalSats - feeSats;
   if (!available.length || amountSats < P2WPKH_DUST_SATS) throw new Error('Spendable balance is too small after the network fee');
   if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS) {
@@ -302,11 +352,14 @@ export function planP2wpkhTransaction(
   feeRateSatVb: number,
   lockTime = 0,
 ): TransactionPlan {
-  if (!Number.isSafeInteger(amountSats) || amountSats < P2WPKH_DUST_SATS) throw new Error('Amount is below the P2WPKH dust threshold');
   if (!Number.isInteger(feeRateSatVb) || feeRateSatVb < MIN_FEE_RATE_SAT_VB || feeRateSatVb > MAX_FEE_RATE_SAT_VB) {
     throw new Error('Fee rate is outside the wallet safety range');
   }
-  const recipientScript = p2wpkhScript(recipient);
+  const destination = supportedRecipient(recipient);
+  if (!Number.isSafeInteger(amountSats) || amountSats < destination.dustSats) {
+    throw new Error('Amount is below the destination dust threshold');
+  }
+  const recipientScript = destination.scriptPubKey;
   const changeScript = p2wpkhScript(changeAddress);
   const available = checkedUtxos(utxos).sort((left, right) => right.value_sats - left.value_sats || left.txid.localeCompare(right.txid) || left.vout - right.vout);
   const selected: PlannedInput[] = [];
@@ -317,7 +370,10 @@ export function planP2wpkhTransaction(
   for (const utxo of available) {
     selected.push({ ...utxo, sequence: SEQUENCE_RBF });
     total += utxo.value_sats;
-    const feeWithChange = estimatedP2wpkhVsize(selected.length, 2) * feeRateSatVb;
+    const feeWithChange = estimatedP2wpkhVsize(
+      selected.length,
+      [recipientScript.length, changeScript.length],
+    ) * feeRateSatVb;
     const candidateChange = total - amountSats - feeWithChange;
     if (candidateChange >= P2WPKH_DUST_SATS) {
       feeSats = feeWithChange;
@@ -325,7 +381,7 @@ export function planP2wpkhTransaction(
       outputCount = 2;
       break;
     }
-    const minimumNoChangeFee = estimatedP2wpkhVsize(selected.length, 1) * feeRateSatVb;
+    const minimumNoChangeFee = estimatedP2wpkhVsize(selected.length, [recipientScript.length]) * feeRateSatVb;
     const remainder = total - amountSats;
     if (remainder >= minimumNoChangeFee && remainder < feeWithChange + P2WPKH_DUST_SATS) {
       feeSats = remainder;
@@ -338,17 +394,20 @@ export function planP2wpkhTransaction(
   if (feeSats <= 0 || feeSats > MAX_ABSOLUTE_FEE_SATS) {
     throw new Error('Calculated network fee exceeds the wallet safety limit');
   }
-  const outputs: PlannedOutput[] = [{ address: recipient.toLowerCase(), valueSats: amountSats, scriptPubKey: recipientScript, change: false }];
+  const outputs: PlannedOutput[] = [{ address: destination.normalizedAddress, valueSats: amountSats, scriptPubKey: recipientScript, change: false }];
   if (changeSats) outputs.push({ address: changeAddress.toLowerCase(), valueSats: changeSats, scriptPubKey: changeScript, change: true });
   return {
     version: 2,
     lockTime,
-    recipient: recipient.toLowerCase(),
+    recipient: destination.normalizedAddress,
     amountSats,
     feeSats,
     feeRateSatVb,
     changeSats,
-    estimatedVsize: estimatedP2wpkhVsize(selected.length, outputCount),
+    estimatedVsize: estimatedP2wpkhVsize(
+      selected.length,
+      outputCount === 2 ? [recipientScript.length, changeScript.length] : [recipientScript.length],
+    ),
     inputs: selected,
     outputs,
   };
