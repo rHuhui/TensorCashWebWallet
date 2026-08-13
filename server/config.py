@@ -8,6 +8,10 @@ def _origins(value: str) -> tuple[str, ...]:
     return tuple(item.strip().rstrip("/") for item in value.split(",") if item.strip())
 
 
+def _enabled(value: str) -> bool:
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -27,6 +31,12 @@ class Settings:
     mempool_transaction_limit: int = 500
     public_read_rate: float = 2.0
     public_read_burst: int = 12
+    overview_read_rate: float = 50.0
+    overview_read_burst: int = 200
+    wallet_query_cache_seconds: float = 2.0
+    wallet_query_cache_entries: int = 4_096
+    mempool_background_refresh: bool = False
+    mempool_refresh_seconds: float = 10.0
     max_page: int = 10_000
 
     @classmethod
@@ -67,5 +77,23 @@ class Settings:
             mempool_transaction_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_MEMPOOL_LIMIT", "500")))),
             public_read_rate=max(0.1, float(os.getenv("TSCWALLET_PUBLIC_READ_RATE", "2"))),
             public_read_burst=max(2, int(os.getenv("TSCWALLET_PUBLIC_READ_BURST", "12"))),
+            overview_read_rate=max(
+                1.0, float(os.getenv("TSCWALLET_OVERVIEW_READ_RATE", "50"))
+            ),
+            overview_read_burst=max(
+                10, int(os.getenv("TSCWALLET_OVERVIEW_READ_BURST", "200"))
+            ),
+            wallet_query_cache_seconds=max(
+                0.0, float(os.getenv("TSCWALLET_QUERY_CACHE_SECONDS", "2"))
+            ),
+            wallet_query_cache_entries=max(
+                16, min(16_384, int(os.getenv("TSCWALLET_QUERY_CACHE_ENTRIES", "4096")))
+            ),
+            mempool_background_refresh=_enabled(
+                os.getenv("TSCWALLET_MEMPOOL_BACKGROUND_REFRESH", "1")
+            ),
+            mempool_refresh_seconds=max(
+                1.0, float(os.getenv("TSCWALLET_MEMPOOL_REFRESH_SECONDS", "10"))
+            ),
             max_page=max(1, min(100_000, int(os.getenv("TSCWALLET_MAX_PAGE", "10000")))),
         )

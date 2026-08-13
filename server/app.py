@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import math
 import re
 import sqlite3
@@ -83,11 +84,20 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         "retry_at": 0.0,
         "refreshing": False,
         "transactions": [],
+        "transactions_by_txid": {},
+        "address_flows": {},
+        "raw_transactions": {},
         "observed_at": None,
         "generation": 0,
     }
     mempool_cache_lock = threading.Lock()
+    mempool_refresh_wakeup = threading.Event()
+    confirmed_query_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    confirmed_query_cache_lock = threading.Lock()
     expensive_request_limiter = _TokenBucket(cfg.public_read_rate, cfg.public_read_burst)
+    overview_request_limiter = _TokenBucket(
+        cfg.overview_read_rate, cfg.overview_read_burst
+    )
 
     def public_core_call(method: str, params: list[Any] | None = None) -> Any:
         if isinstance(core, RPCClient):
@@ -112,6 +122,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 "retry_at": 0.0,
                 "generation": int(mempool_cache["generation"]) + 1,
             })
+        mempool_refresh_wakeup.set()
 
     def client_address() -> str:
         direct = request.remote_addr or "unknown"
@@ -262,31 +273,31 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
     def json_error(status: int, code: str, message: str):
         return jsonify({"error": {"code": code, "message": message}}), status
 
-    def mempool_transactions(
-        connection: sqlite3.Connection,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Return decoded mempool value flows without persisting wallet queries.
-
-        The expensive Core decode is shared for thirty seconds. Wallet addresses
-        are applied only after this cache is built, so the service never stores
-        an address-to-wallet association.
-        """
-        now = time.monotonic()
-
-        def snapshot(available: bool, stale: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            return list(mempool_cache["transactions"]), {
-                "available": available,
-                "stale": stale,
-                "observed_at": mempool_cache["observed_at"],
-            }
-
+    def mempool_snapshot() -> tuple[dict[str, dict[str, Any]], dict[str, tuple[dict[str, Any], ...]], dict[str, Any]]:
+        """Read one immutable public mempool snapshot without contacting Core."""
         with mempool_cache_lock:
-            if now - float(mempool_cache["at"]) < MEMPOOL_CACHE_SECONDS:
-                return snapshot(True, False)
+            observed_at = mempool_cache["observed_at"]
+            age = time.monotonic() - float(mempool_cache["at"])
+            fresh = observed_at is not None and age < MEMPOOL_CACHE_SECONDS
+            return (
+                mempool_cache["transactions_by_txid"],
+                mempool_cache["address_flows"],
+                {
+                    "available": fresh,
+                    "stale": not fresh,
+                    "observed_at": observed_at,
+                },
+            )
+
+    def refresh_mempool_snapshot(connection: sqlite3.Connection) -> bool:
+        """Build and atomically publish the address-indexed public snapshot."""
+        now = time.monotonic()
+        with mempool_cache_lock:
             if mempool_cache["refreshing"] or now < float(mempool_cache["retry_at"]):
-                return snapshot(False, True)
+                return False
             mempool_cache["refreshing"] = True
             generation = int(mempool_cache["generation"])
+            cached_raw_transactions = dict(mempool_cache["raw_transactions"])
         try:
             entries = public_core_call("getrawmempool", [True])
             if not isinstance(entries, dict):
@@ -297,28 +308,46 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 reverse=True,
             )[:cfg.mempool_transaction_limit]
             txids = [txid for txid, _entry in ordered]
+            missing_txids = [txid for txid in txids if txid not in cached_raw_transactions]
             decoded = core_batch_chunked(
-                (("getrawtransaction", [txid, True]) for txid in txids),
+                (("getrawtransaction", [txid, True]) for txid in missing_txids),
                 public_read=True,
             )
-        except (RPCError, TypeError, ValueError) as exc:
+        except (RPCError, TypeError, ValueError, sqlite3.Error) as exc:
             with mempool_cache_lock:
                 mempool_cache.update({
                     "refreshing": False,
                     "retry_at": time.monotonic() + cfg.rpc_failure_backoff_seconds,
                 })
-                result = snapshot(False, True)
             app.logger.warning(
                 "Public Core snapshot stale component=mempool cause=%s",
                 getattr(exc, "code", type(exc).__name__),
             )
-            return result
+            return False
 
-        raw_by_txid = {
+        decoded_by_txid = {
             txid: transaction
-            for txid, transaction in zip(txids, decoded)
+            for txid, transaction in zip(missing_txids, decoded)
             if isinstance(transaction, dict)
         }
+        raw_by_txid = {
+            txid: transaction
+            for txid in txids
+            if isinstance(
+                (transaction := cached_raw_transactions.get(txid, decoded_by_txid.get(txid))),
+                dict,
+            )
+        }
+        if len(raw_by_txid) != len(txids):
+            with mempool_cache_lock:
+                mempool_cache.update({
+                    "refreshing": False,
+                    "retry_at": time.monotonic() + cfg.rpc_failure_backoff_seconds,
+                })
+            app.logger.warning(
+                "Public Core snapshot stale component=mempool cause=missing_decoded_transaction"
+            )
+            return False
         confirmed_prevouts: dict[tuple[str, int], tuple[str | None, int]] = {}
         previous_pairs = {
             (str(vin.get("txid", "")), int(vin.get("vout", -1)))
@@ -327,13 +356,23 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             if vin.get("txid") and isinstance(vin.get("vout"), int)
             and str(vin.get("txid")) not in raw_by_txid
         }
-        for txid, vout in previous_pairs:
-            row = connection.execute(
-                "SELECT address, value_sats FROM tx_outputs WHERE txid = ? AND vout_index = ?",
-                (txid, vout),
-            ).fetchone()
-            if row is not None:
-                confirmed_prevouts[(txid, vout)] = (row["address"], int(row["value_sats"]))
+        previous_list = list(previous_pairs)
+        for offset in range(0, len(previous_list), 200):
+            chunk = previous_list[offset:offset + 200]
+            pair_placeholders = ",".join("(?, ?)" for _ in chunk)
+            parameters = [value for pair in chunk for value in pair]
+            rows = connection.execute(
+                f"""
+                SELECT txid, vout_index, address, value_sats
+                FROM tx_outputs
+                WHERE (txid, vout_index) IN ({pair_placeholders})
+                """,
+                parameters,
+            ).fetchall()
+            for row in rows:
+                confirmed_prevouts[(str(row["txid"]), int(row["vout_index"]))] = (
+                    row["address"], int(row["value_sats"])
+                )
 
         def output_at(txid: str, vout: int) -> tuple[str | None, int] | None:
             parent = raw_by_txid.get(txid)
@@ -346,6 +385,8 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             return confirmed_prevouts.get((txid, vout))
 
         normalized: list[dict[str, Any]] = []
+        transactions_by_txid: dict[str, dict[str, Any]] = {}
+        address_flows: dict[str, list[dict[str, Any]]] = {}
         entry_by_txid = dict(ordered)
         for txid in txids:
             transaction = raw_by_txid.get(txid)
@@ -366,18 +407,36 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     "value_sats": _sats(output.get("value", 0)),
                 })
             entry = entry_by_txid.get(txid) or {}
-            normalized.append({
+            item = {
                 "txid": txid,
                 "timestamp": int(entry.get("time", time.time())),
                 "fee_sats": _sats((entry.get("fees") or {}).get("base", 0)),
                 "inputs": inputs,
                 "outputs": outputs,
-            })
+            }
+            normalized.append(item)
+            transactions_by_txid[txid] = {
+                "txid": txid,
+                "timestamp": item["timestamp"],
+                "fee_sats": item["fee_sats"],
+            }
+            per_address: dict[str, dict[str, int]] = {}
+            for transaction_input in inputs:
+                address = transaction_input.get("address")
+                if address:
+                    flow = per_address.setdefault(str(address), {"received_sats": 0, "sent_sats": 0})
+                    flow["sent_sats"] += int(transaction_input["value_sats"])
+            for transaction_output in outputs:
+                address = transaction_output.get("address")
+                if address:
+                    flow = per_address.setdefault(str(address), {"received_sats": 0, "sent_sats": 0})
+                    flow["received_sats"] += int(transaction_output["value_sats"])
+            for address, flow in per_address.items():
+                address_flows.setdefault(address, []).append({"txid": txid, **flow})
         observed_at = int(time.time())
         with mempool_cache_lock:
             if generation != int(mempool_cache["generation"]):
                 mempool_cache["refreshing"] = False
-                result = snapshot(False, True)
                 retry_needed = True
             else:
                 mempool_cache.update({
@@ -385,16 +444,68 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     "retry_at": 0.0,
                     "refreshing": False,
                     "transactions": normalized,
+                    "transactions_by_txid": transactions_by_txid,
+                    "address_flows": {
+                        address: tuple(flows) for address, flows in address_flows.items()
+                    },
+                    "raw_transactions": raw_by_txid,
                     "observed_at": observed_at,
                 })
-                result = snapshot(True, False)
                 retry_needed = False
         if retry_needed:
-            # A successful broadcast invalidated this refresh while it was in
-            # flight. Rebuild immediately so the newly relayed transaction is
-            # not hidden behind the old snapshot until the next UI poll.
-            return mempool_transactions(connection)
-        return result
+            mempool_refresh_wakeup.set()
+            return False
+        return True
+
+    def ensure_mempool_snapshot(connection: sqlite3.Connection) -> None:
+        _by_txid, _flows, status = mempool_snapshot()
+        if status["available"]:
+            return
+        if cfg.mempool_background_refresh:
+            mempool_refresh_wakeup.set()
+            return
+        refresh_mempool_snapshot(connection)
+
+    def mempool_refresh_loop() -> None:
+        # This thread only produces public chain snapshots. Wallet address sets
+        # are never passed into it or retained by it.
+        while True:
+            try:
+                with closing(database()) as connection:
+                    refresh_mempool_snapshot(connection)
+            except sqlite3.Error as exc:
+                app.logger.warning(
+                    "Public mempool background refresh failed cause=%s",
+                    type(exc).__name__,
+                )
+            mempool_refresh_wakeup.wait(cfg.mempool_refresh_seconds)
+            mempool_refresh_wakeup.clear()
+
+    if cfg.mempool_background_refresh:
+        threading.Thread(
+            target=mempool_refresh_loop,
+            name="tscwallet-mempool-snapshot",
+            daemon=True,
+        ).start()
+
+    def confirmed_query_cache_janitor() -> None:
+        while True:
+            time.sleep(max(0.25, cfg.wallet_query_cache_seconds))
+            cutoff = time.monotonic() - cfg.wallet_query_cache_seconds
+            with confirmed_query_cache_lock:
+                expired = [
+                    key for key, (created, _value) in confirmed_query_cache.items()
+                    if created < cutoff
+                ]
+                for key in expired:
+                    confirmed_query_cache.pop(key, None)
+
+    if cfg.wallet_query_cache_seconds > 0:
+        threading.Thread(
+            target=confirmed_query_cache_janitor,
+            name="tscwallet-query-cache-janitor",
+            daemon=True,
+        ).start()
 
     def wallet_pending(
         connection: sqlite3.Connection,
@@ -404,24 +515,26 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         transactions: list[dict[str, Any]] = []
         total_received = 0
         total_sent = 0
-        mempool, pending_status = mempool_transactions(connection)
-        for transaction in mempool:
-            received = sum(
-                int(output["value_sats"])
-                for output in transaction["outputs"]
-                if output.get("address") in owned
-            )
-            sent = sum(
-                int(item["value_sats"])
-                for item in transaction["inputs"]
-                if item.get("address") in owned
-            )
-            if not received and not sent:
+        ensure_mempool_snapshot(connection)
+        transactions_by_txid, address_flows, pending_status = mempool_snapshot()
+        wallet_flows: dict[str, dict[str, int]] = {}
+        for address in owned:
+            for flow in address_flows.get(address, ()):
+                combined = wallet_flows.setdefault(
+                    str(flow["txid"]), {"received_sats": 0, "sent_sats": 0}
+                )
+                combined["received_sats"] += int(flow["received_sats"])
+                combined["sent_sats"] += int(flow["sent_sats"])
+        for txid, flow in wallet_flows.items():
+            transaction = transactions_by_txid.get(txid)
+            if transaction is None:
                 continue
+            received = int(flow["received_sats"])
+            sent = int(flow["sent_sats"])
             total_received += received
             total_sent += sent
             transactions.append({
-                "txid": transaction["txid"],
+                "txid": txid,
                 "status": "pending",
                 "confirmations": 0,
                 "block_height": None,
@@ -480,9 +593,8 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             "test_transaction",
             "broadcast_transaction",
         }
-        if request.endpoint in expensive_endpoints and not expensive_request_limiter.allow(
-            client_address(), str(request.endpoint)
-        ):
+        limiter = overview_request_limiter if request.endpoint == "wallet_overview" else expensive_request_limiter
+        if request.endpoint in expensive_endpoints and not limiter.allow(client_address(), str(request.endpoint)):
             response = json_error(429, "rate_limited", "Too many expensive wallet requests; retry shortly")
             response[0].headers["Retry-After"] = "1"
             return response
@@ -604,56 +716,116 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     "stale": False,
                     "observed_at": None,
                 }
-            summary = connection.execute(
-                f"""
-                SELECT COALESCE(SUM(balance_sats), 0) AS balance_sats,
-                       COALESCE(SUM(received_sats), 0) AS received_sats,
-                       COALESCE(SUM(sent_sats), 0) AS sent_sats,
-                       MIN(first_seen_height) AS first_seen_height,
-                       MAX(last_seen_height) AS last_seen_height
-                FROM addresses
-                WHERE address IN ({placeholders})
-                """,
-                addresses,
-            ).fetchone()
-            funded_rows = connection.execute(
-                f"""
-                SELECT address, balance_sats, received_sats, sent_sats,
-                       tx_count, first_seen_height, last_seen_height
-                FROM addresses
-                WHERE address IN ({placeholders}) AND balance_sats > 0
-                ORDER BY balance_sats DESC, address
-                """,
-                addresses,
-            ).fetchall()
-            total = int(connection.execute(
-                f"SELECT COUNT(DISTINCT txid) FROM address_transactions WHERE address IN ({placeholders})",
-                addresses,
-            ).fetchone()[0])
+            tip = int(connection.execute("SELECT COALESCE(MAX(height), -1) FROM blocks").fetchone()[0])
+            query_material = "\0".join(
+                (*sorted(addresses), str(page), str(page_size), str(tip))
+            ).encode("utf-8")
+            query_key = hashlib.sha256(query_material).hexdigest()
+            confirmed_payload: dict[str, Any] | None = None
+            now = time.monotonic()
+            if cfg.wallet_query_cache_seconds > 0:
+                with confirmed_query_cache_lock:
+                    cached = confirmed_query_cache.get(query_key)
+                    if cached is not None and now - cached[0] < cfg.wallet_query_cache_seconds:
+                        confirmed_payload = cached[1]
+            if confirmed_payload is None:
+                summary = dict(connection.execute(
+                    f"""
+                    SELECT COALESCE(SUM(balance_sats), 0) AS balance_sats,
+                           COALESCE(SUM(received_sats), 0) AS received_sats,
+                           COALESCE(SUM(sent_sats), 0) AS sent_sats,
+                           MIN(first_seen_height) AS first_seen_height,
+                           MAX(last_seen_height) AS last_seen_height
+                    FROM addresses
+                    WHERE address IN ({placeholders})
+                    """,
+                    addresses,
+                ).fetchone())
+                funded_rows = [dict(row) for row in connection.execute(
+                    f"""
+                    SELECT address, balance_sats, received_sats, sent_sats,
+                           tx_count, first_seen_height, last_seen_height
+                    FROM addresses
+                    WHERE address IN ({placeholders}) AND balance_sats > 0
+                    ORDER BY balance_sats DESC, address
+                    """,
+                    addresses,
+                ).fetchall()]
+                total = int(connection.execute(
+                    f"SELECT COUNT(DISTINCT txid) FROM address_transactions WHERE address IN ({placeholders})",
+                    addresses,
+                ).fetchone()[0])
+                confirmed_offset = max(0, offset)
+                confirmed_rows = [dict(row) for row in connection.execute(
+                    f"""
+                    SELECT atx.txid, MAX(atx.block_height) AS block_height,
+                           MAX(atx.timestamp) AS timestamp,
+                           SUM(atx.received_sats) AS received_sats,
+                           SUM(atx.sent_sats) AS sent_sats,
+                           SUM(atx.delta_sats) AS delta_sats,
+                           MAX(tx.block_hash) AS block_hash,
+                           MAX(tx.position) AS position,
+                           MAX(tx.fee_sats) AS fee_sats,
+                           MAX(tx.is_coinbase) AS is_coinbase
+                    FROM address_transactions AS atx
+                    JOIN transactions AS tx ON tx.txid = atx.txid
+                    WHERE atx.address IN ({placeholders})
+                    GROUP BY atx.txid
+                    ORDER BY block_height DESC, position DESC, atx.txid
+                    LIMIT ? OFFSET ?
+                    """,
+                    (*addresses, page_size, confirmed_offset),
+                ).fetchall()]
+                confirmed_payload = {
+                    "summary": summary,
+                    "funded_addresses": funded_rows,
+                    "total": total,
+                    "transactions": confirmed_rows,
+                }
+                if cfg.wallet_query_cache_seconds > 0:
+                    with confirmed_query_cache_lock:
+                        created_at = time.monotonic()
+                        cutoff = created_at - cfg.wallet_query_cache_seconds
+                        expired = [
+                            key for key, (created, _value) in confirmed_query_cache.items()
+                            if created < cutoff
+                        ]
+                        for key in expired:
+                            confirmed_query_cache.pop(key, None)
+                        if len(confirmed_query_cache) >= cfg.wallet_query_cache_entries:
+                            confirmed_query_cache.pop(next(iter(confirmed_query_cache)))
+                        confirmed_query_cache[query_key] = (created_at, confirmed_payload)
+            summary = confirmed_payload["summary"]
+            funded_rows = confirmed_payload["funded_addresses"]
+            total = int(confirmed_payload["total"])
             combined_total = total + len(pending)
             pending_page = pending[offset:offset + page_size]
             confirmed_offset = max(0, offset - len(pending))
             confirmed_limit = max(0, page_size - len(pending_page))
-            rows = connection.execute(
-                f"""
-                SELECT atx.txid, MAX(atx.block_height) AS block_height,
-                       MAX(atx.timestamp) AS timestamp,
-                       SUM(atx.received_sats) AS received_sats,
-                       SUM(atx.sent_sats) AS sent_sats,
-                       SUM(atx.delta_sats) AS delta_sats,
-                       MAX(tx.block_hash) AS block_hash,
-                       MAX(tx.position) AS position,
-                       MAX(tx.fee_sats) AS fee_sats,
-                       MAX(tx.is_coinbase) AS is_coinbase
-                FROM address_transactions AS atx
-                JOIN transactions AS tx ON tx.txid = atx.txid
-                WHERE atx.address IN ({placeholders})
-                GROUP BY atx.txid
-                ORDER BY block_height DESC, position DESC, atx.txid
-                LIMIT ? OFFSET ?
-                """,
-                (*addresses, confirmed_limit, confirmed_offset),
-            ).fetchall()
+            rows = confirmed_payload["transactions"]
+            if confirmed_offset != offset:
+                rows = [dict(row) for row in connection.execute(
+                    f"""
+                    SELECT atx.txid, MAX(atx.block_height) AS block_height,
+                           MAX(atx.timestamp) AS timestamp,
+                           SUM(atx.received_sats) AS received_sats,
+                           SUM(atx.sent_sats) AS sent_sats,
+                           SUM(atx.delta_sats) AS delta_sats,
+                           MAX(tx.block_hash) AS block_hash,
+                           MAX(tx.position) AS position,
+                           MAX(tx.fee_sats) AS fee_sats,
+                           MAX(tx.is_coinbase) AS is_coinbase
+                    FROM address_transactions AS atx
+                    JOIN transactions AS tx ON tx.txid = atx.txid
+                    WHERE atx.address IN ({placeholders})
+                    GROUP BY atx.txid
+                    ORDER BY block_height DESC, position DESC, atx.txid
+                    LIMIT ? OFFSET ?
+                    """,
+                    (*addresses, confirmed_limit, confirmed_offset),
+                ).fetchall()]
+            else:
+                rows = rows[:confirmed_limit]
             payload = dict(summary)
             payload.update({
                 "address": addresses[0],

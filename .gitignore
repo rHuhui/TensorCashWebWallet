@@ -4,6 +4,7 @@ web/public/vendor/
 deploy/*
 !deploy/examples/
 !deploy/examples/**
+!deploy/release-backend.sh
 .env
 .env.*
 !.env.example
