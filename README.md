@@ -1,6 +1,6 @@
 # TensorCash Web Wallet
 
-TensorCash Web Wallet v1.0.1 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
+TensorCash Web Wallet v1.0.3 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
 
 Source repository: [github.com/rHuhui/TensorCashWebWallet](https://github.com/rHuhui/TensorCashWebWallet)
 
@@ -123,6 +123,9 @@ The gateway reads process environment variables; no secrets are compiled into it
 | `TSCWALLET_RPC_PASSWORD` | Dedicated RPC password | Long random secret, server-side only |
 | `TSCWALLET_ALLOWED_ORIGINS` | Exact browser origins allowed to mutate state | `https://app.example` |
 | `TSCWALLET_RPC_TIMEOUT` | Core request timeout in seconds | `8` by default |
+| `TSCWALLET_PUBLIC_RPC_TIMEOUT` | Short timeout for non-authoritative read enrichment | `2` seconds |
+| `TSCWALLET_CHAIN_STATUS_CACHE_SECONDS` | Fresh lifetime for a successful chain snapshot | `5` seconds |
+| `TSCWALLET_RPC_FAILURE_BACKOFF_SECONDS` | Delay before retrying a failed public snapshot | `5` seconds |
 | `TSCWALLET_RPC_BATCH_SIZE` | Maximum Core calls in one JSON-RPC batch | `50` |
 | `TSCWALLET_UTXO_CANDIDATE_LIMIT` | Maximum indexed UTXO candidates per wallet query | `500` |
 | `TSCWALLET_MEMPOOL_LIMIT` | Maximum mempool transactions decoded per cache fill | `500` |
@@ -191,7 +194,7 @@ This project uses [Semantic Versioning](https://semver.org/):
 - `PATCH` contains backward-compatible fixes and security hardening.
 - Git tags and GitHub releases use a `v` prefix, for example `v1.0.0`; package files use `1.0.0`.
 
-The current patch release is **v1.0.2**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
+The current patch release is **v1.0.3**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
 
 ### Hosted build verification
 

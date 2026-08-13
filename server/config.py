@@ -18,6 +18,9 @@ class Settings:
     rpc_password: str
     allowed_origins: tuple[str, ...]
     request_timeout: float = 8.0
+    public_rpc_timeout: float = 2.0
+    chain_status_cache_seconds: float = 5.0
+    rpc_failure_backoff_seconds: float = 5.0
     max_transaction_bytes: int = 500_000
     rpc_batch_size: int = 50
     utxo_candidate_limit: int = 500
@@ -27,7 +30,7 @@ class Settings:
     max_page: int = 10_000
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         return cls(
             host=os.getenv("TSCWALLET_HOST", "127.0.0.1"),
             port=int(os.getenv("TSCWALLET_PORT", "9920")),
@@ -46,6 +49,19 @@ class Settings:
                 os.getenv("TSCWALLET_ALLOWED_ORIGINS", "http://127.0.0.1:5173")
             ),
             request_timeout=float(os.getenv("TSCWALLET_RPC_TIMEOUT", "8")),
+            public_rpc_timeout=max(
+                0.25,
+                min(
+                    float(os.getenv("TSCWALLET_PUBLIC_RPC_TIMEOUT", "2")),
+                    float(os.getenv("TSCWALLET_RPC_TIMEOUT", "8")),
+                ),
+            ),
+            chain_status_cache_seconds=max(
+                0.25, float(os.getenv("TSCWALLET_CHAIN_STATUS_CACHE_SECONDS", "5"))
+            ),
+            rpc_failure_backoff_seconds=max(
+                0.25, float(os.getenv("TSCWALLET_RPC_FAILURE_BACKOFF_SECONDS", "5"))
+            ),
             rpc_batch_size=max(1, min(100, int(os.getenv("TSCWALLET_RPC_BATCH_SIZE", "50")))),
             utxo_candidate_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_UTXO_CANDIDATE_LIMIT", "500")))),
             mempool_transaction_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_MEMPOOL_LIMIT", "500")))),

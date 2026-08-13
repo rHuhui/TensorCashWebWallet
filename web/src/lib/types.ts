@@ -95,6 +95,9 @@ export interface ChainStatus {
   lag: number;
   synced: boolean;
   observed_at: number;
+  core_available?: boolean;
+  stale?: boolean;
+  status_source?: 'core' | 'cache' | 'index';
 }
 
 export interface AddressSummary {

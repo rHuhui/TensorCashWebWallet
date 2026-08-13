@@ -180,10 +180,13 @@ function SecurityIcon() {
 }
 
 function StatusBadge({ status, error }: { status: ChainStatus | null; error?: string }) {
-  const state = error ? 'error' : status?.synced ? 'ready' : 'warning';
+  const stale = status?.stale || status?.core_available === false;
+  const state = error ? 'error' : status?.synced && !stale ? 'ready' : 'warning';
   const label = error
     ? 'Gateway unavailable'
-    : status?.synced
+    : stale
+      ? `Core delayed · index ${status?.indexed_height.toLocaleString() ?? '—'}`
+      : status?.synced
       ? `Synced · ${status.indexed_height.toLocaleString()}`
       : status
         ? `${status.lag.toLocaleString()} blocks behind`
@@ -1410,6 +1413,10 @@ export default function App() {
       try {
         const liveAccount = await getWalletOverview(addresses, 1, true);
         if (sequence === refreshSequence.current) {
+          if (liveAccount.pending_status?.stale && liveAccount.pending_status.observed_at === null) {
+            setStatus(liveAccount.status);
+            return;
+          }
           const reconciled = reconcileLiveAccount(liveAccount.address, liveAccount.transactions, transactionsRef.current);
           setStatus(liveAccount.status);
           setSummary(reconciled.summary);
@@ -1627,9 +1634,12 @@ export default function App() {
   }
 
   if (vault === undefined) return <div className="boot"><Logo /><span /></div>;
-  const chainNoticeMode = networkError ? 'error' : status && !status.synced ? 'syncing' : '';
+  const staleChain = Boolean(status?.stale || status?.core_available === false);
+  const chainNoticeMode = networkError ? 'error' : staleChain ? 'syncing' : status && !status.synced ? 'syncing' : '';
   const chainNotice = networkError
     ? `Chain data is temporarily unavailable · ${networkError}`
+    : staleChain
+      ? `TensorCash Core is responding slowly · confirmed balance and history remain available from index height ${status?.indexed_height.toLocaleString() ?? '—'}`
     : status && !status.synced
       ? `Synchronizing blockchain · ${status.indexed_height.toLocaleString()} / ${status.core_height.toLocaleString()} · ${status.lag.toLocaleString()} blocks remaining`
       : '';

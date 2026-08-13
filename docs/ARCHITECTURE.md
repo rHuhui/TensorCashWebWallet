@@ -142,6 +142,18 @@ Operational data has different recovery properties:
 
 A release rollback must keep server code, frontend protocol, explorer schema, and Core behavior compatible. Document migrations before deployment and retain the immediately previous release.
 
+## Read availability and Core failure boundaries
+
+Confirmed balances and history come from the read-only explorer index. A short
+Core RPC stall must not discard those already-indexed results. The gateway
+caches successful chain and mempool snapshots, uses a shorter timeout for
+anonymous read enrichment, and returns explicit `stale`, `core_available`, and
+`pending_status` metadata when it has to serve the last safe snapshot.
+
+This degradation does not apply to spending. UTXO verification,
+`testmempoolaccept`, and `sendrawtransaction` always require a live Core result
+and fail closed when Core is unavailable.
+
 ## Deliberate omissions in v1.0.1
 
 The gateway does not implement accounts, cloud backup, password reset, Google Authenticator, or server-side 2FA. A server-verifiable TOTP factor would create an account-to-secret database and a recovery policy that conflict with the stateless design. Sensitive local actions require fresh wallet-password verification. This is not a second factor; a future WebAuthn/passkey design would require a separate threat model and recovery review.

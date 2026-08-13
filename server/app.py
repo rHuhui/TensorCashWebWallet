@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import math
 import ipaddress
+import math
 import re
 import sqlite3
 import threading
 import time
 from contextlib import closing
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,6 @@ from flask import Flask, abort, jsonify, request
 
 from .config import Settings
 from .rpc import RPCClient, RPCError
-
 
 ADDRESS_RE = re.compile(r"^tc1[02-9ac-hj-np-z]{20,100}$", re.IGNORECASE)
 TX_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
@@ -72,16 +71,47 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = cfg.max_transaction_bytes * 2
     app.json.sort_keys = False
-    mempool_cache: dict[str, Any] = {"at": 0.0, "transactions": []}
+    chain_status_cache: dict[str, Any] = {
+        "at": 0.0,
+        "retry_at": 0.0,
+        "refreshing": False,
+        "status": None,
+    }
+    chain_status_cache_lock = threading.Lock()
+    mempool_cache: dict[str, Any] = {
+        "at": 0.0,
+        "retry_at": 0.0,
+        "refreshing": False,
+        "transactions": [],
+        "observed_at": None,
+        "generation": 0,
+    }
     mempool_cache_lock = threading.Lock()
     expensive_request_limiter = _TokenBucket(cfg.public_read_rate, cfg.public_read_burst)
 
-    def core_batch_chunked(calls: Any) -> list[Any]:
+    def public_core_call(method: str, params: list[Any] | None = None) -> Any:
+        if isinstance(core, RPCClient):
+            return core.call(method, params, timeout=cfg.public_rpc_timeout)
+        return core.call(method, params)
+
+    def core_batch_chunked(calls: Any, *, public_read: bool = False) -> list[Any]:
         pending = list(calls)
         results: list[Any] = []
         for offset in range(0, len(pending), cfg.rpc_batch_size):
-            results.extend(core.batch(pending[offset:offset + cfg.rpc_batch_size]))
+            chunk = pending[offset:offset + cfg.rpc_batch_size]
+            if public_read and isinstance(core, RPCClient):
+                results.extend(core.batch(chunk, timeout=cfg.public_rpc_timeout))
+            else:
+                results.extend(core.batch(chunk))
         return results
+
+    def invalidate_mempool_cache() -> None:
+        with mempool_cache_lock:
+            mempool_cache.update({
+                "at": 0.0,
+                "retry_at": 0.0,
+                "generation": int(mempool_cache["generation"]) + 1,
+            })
 
     def client_address() -> str:
         direct = request.remote_addr or "unknown"
@@ -114,7 +144,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         if not ADDRESS_RE.fullmatch(value):
             abort(404)
         try:
-            validation = core.call("validateaddress", [value])
+            validation = public_core_call("validateaddress", [value])
         except RPCError:
             # Read endpoints remain usable while Core is briefly unavailable; the
             # strict Bech32 alphabet/length check still prevents SQL abuse.
@@ -142,25 +172,99 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         return addresses
 
     def chain_status(connection: sqlite3.Connection) -> dict[str, Any]:
-        indexed = connection.execute("SELECT COALESCE(MAX(height), -1) FROM blocks").fetchone()[0]
-        info = core.call("getblockchaininfo")
-        tip = int(info.get("blocks", -1))
-        headers = int(info.get("headers", tip))
-        lag = max(0, tip - int(indexed))
-        return {
-            "network": info.get("chain", "unknown"),
-            "core_height": tip,
-            "header_height": headers,
-            "indexed_height": int(indexed),
-            "lag": lag,
-            "synced": lag == 0 and tip >= 0 and headers - tip <= 1,
-            "observed_at": int(time.time()),
-        }
+        indexed = int(
+            connection.execute("SELECT COALESCE(MAX(height), -1) FROM blocks").fetchone()[0]
+        )
+
+        def degraded(cached: dict[str, Any] | None) -> dict[str, Any]:
+            if cached:
+                status = dict(cached)
+                tip = int(status["core_height"])
+                status.update({
+                    "indexed_height": indexed,
+                    "lag": max(0, tip - indexed),
+                    "synced": False,
+                    "core_available": False,
+                    "stale": True,
+                    "status_source": "cache",
+                })
+                return status
+            return {
+                "network": "unknown",
+                "core_height": indexed,
+                "header_height": indexed,
+                "indexed_height": indexed,
+                "lag": 0,
+                "synced": False,
+                "observed_at": int(time.time()),
+                "core_available": False,
+                "stale": True,
+                "status_source": "index",
+            }
+
+        now = time.monotonic()
+        with chain_status_cache_lock:
+            cached = chain_status_cache["status"]
+            if cached is not None and now - float(chain_status_cache["at"]) < cfg.chain_status_cache_seconds:
+                status = dict(cached)
+                tip = int(status["core_height"])
+                headers = int(status["header_height"])
+                status.update({
+                    "indexed_height": indexed,
+                    "lag": max(0, tip - indexed),
+                    "synced": tip >= 0 and indexed >= tip and headers - tip <= 1,
+                })
+                return status
+            if chain_status_cache["refreshing"] or now < float(chain_status_cache["retry_at"]):
+                return degraded(cached)
+            chain_status_cache["refreshing"] = True
+
+        try:
+            info = public_core_call("getblockchaininfo")
+            if not isinstance(info, dict):
+                raise RPCError("invalid_response", "TensorCash Core returned invalid chain status")
+            tip = int(info.get("blocks", -1))
+            headers = int(info.get("headers", tip))
+            status = {
+                "network": info.get("chain", "unknown"),
+                "core_height": tip,
+                "header_height": headers,
+                "indexed_height": indexed,
+                "lag": max(0, tip - indexed),
+                "synced": tip >= 0 and indexed >= tip and headers - tip <= 1,
+                "observed_at": int(time.time()),
+                "core_available": True,
+                "stale": False,
+                "status_source": "core",
+            }
+        except (RPCError, TypeError, ValueError) as exc:
+            with chain_status_cache_lock:
+                chain_status_cache.update({
+                    "refreshing": False,
+                    "retry_at": time.monotonic() + cfg.rpc_failure_backoff_seconds,
+                })
+                cached = chain_status_cache["status"]
+            app.logger.warning(
+                "Public Core snapshot stale component=chain_status cause=%s",
+                getattr(exc, "code", type(exc).__name__),
+            )
+            return degraded(cached)
+
+        with chain_status_cache_lock:
+            chain_status_cache.update({
+                "at": time.monotonic(),
+                "retry_at": 0.0,
+                "refreshing": False,
+                "status": status,
+            })
+        return dict(status)
 
     def json_error(status: int, code: str, message: str):
         return jsonify({"error": {"code": code, "message": message}}), status
 
-    def mempool_transactions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    def mempool_transactions(
+        connection: sqlite3.Connection,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Return decoded mempool value flows without persisting wallet queries.
 
         The expensive Core decode is shared for thirty seconds. Wallet addresses
@@ -168,91 +272,140 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         an address-to-wallet association.
         """
         now = time.monotonic()
+
+        def snapshot(available: bool, stale: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            return list(mempool_cache["transactions"]), {
+                "available": available,
+                "stale": stale,
+                "observed_at": mempool_cache["observed_at"],
+            }
+
         with mempool_cache_lock:
             if now - float(mempool_cache["at"]) < MEMPOOL_CACHE_SECONDS:
-                return list(mempool_cache["transactions"])
-            try:
-                entries = core.call("getrawmempool", [True])
-                if not isinstance(entries, dict):
-                    return []
-                ordered = sorted(
-                    entries.items(),
-                    key=lambda item: int((item[1] or {}).get("time", 0)),
-                    reverse=True,
-                )[:cfg.mempool_transaction_limit]
-                txids = [txid for txid, _entry in ordered]
-                decoded = core_batch_chunked(("getrawtransaction", [txid, True]) for txid in txids)
-            except RPCError:
-                return list(mempool_cache["transactions"])
-
-            raw_by_txid = {
-                txid: transaction
-                for txid, transaction in zip(txids, decoded)
-                if isinstance(transaction, dict)
-            }
-            confirmed_prevouts: dict[tuple[str, int], tuple[str | None, int]] = {}
-            previous_pairs = {
-                (str(vin.get("txid", "")), int(vin.get("vout", -1)))
-                for transaction in raw_by_txid.values()
-                for vin in transaction.get("vin", [])
-                if vin.get("txid") and isinstance(vin.get("vout"), int)
-                and str(vin.get("txid")) not in raw_by_txid
-            }
-            for txid, vout in previous_pairs:
-                row = connection.execute(
-                    "SELECT address, value_sats FROM tx_outputs WHERE txid = ? AND vout_index = ?",
-                    (txid, vout),
-                ).fetchone()
-                if row is not None:
-                    confirmed_prevouts[(txid, vout)] = (row["address"], int(row["value_sats"]))
-
-            def output_at(txid: str, vout: int) -> tuple[str | None, int] | None:
-                parent = raw_by_txid.get(txid)
-                if parent is not None:
-                    for output in parent.get("vout", []):
-                        if int(output.get("n", -1)) != vout:
-                            continue
-                        script = output.get("scriptPubKey") or {}
-                        return script.get("address"), _sats(output.get("value", 0))
-                return confirmed_prevouts.get((txid, vout))
-
-            normalized: list[dict[str, Any]] = []
-            entry_by_txid = dict(ordered)
-            for txid in txids:
-                transaction = raw_by_txid.get(txid)
-                if transaction is None:
-                    continue
-                inputs = []
-                for vin in transaction.get("vin", []):
-                    if not vin.get("txid") or not isinstance(vin.get("vout"), int):
-                        continue
-                    previous = output_at(str(vin["txid"]), int(vin["vout"]))
-                    if previous is not None:
-                        inputs.append({"address": previous[0], "value_sats": previous[1]})
-                outputs = []
-                for output in transaction.get("vout", []):
-                    script = output.get("scriptPubKey") or {}
-                    outputs.append({
-                        "address": script.get("address"),
-                        "value_sats": _sats(output.get("value", 0)),
-                    })
-                entry = entry_by_txid.get(txid) or {}
-                normalized.append({
-                    "txid": txid,
-                    "timestamp": int(entry.get("time", time.time())),
-                    "fee_sats": _sats((entry.get("fees") or {}).get("base", 0)),
-                    "inputs": inputs,
-                    "outputs": outputs,
+                return snapshot(True, False)
+            if mempool_cache["refreshing"] or now < float(mempool_cache["retry_at"]):
+                return snapshot(False, True)
+            mempool_cache["refreshing"] = True
+            generation = int(mempool_cache["generation"])
+        try:
+            entries = public_core_call("getrawmempool", [True])
+            if not isinstance(entries, dict):
+                raise RPCError("invalid_response", "TensorCash Core returned invalid mempool")
+            ordered = sorted(
+                entries.items(),
+                key=lambda item: int((item[1] or {}).get("time", 0)),
+                reverse=True,
+            )[:cfg.mempool_transaction_limit]
+            txids = [txid for txid, _entry in ordered]
+            decoded = core_batch_chunked(
+                (("getrawtransaction", [txid, True]) for txid in txids),
+                public_read=True,
+            )
+        except (RPCError, TypeError, ValueError) as exc:
+            with mempool_cache_lock:
+                mempool_cache.update({
+                    "refreshing": False,
+                    "retry_at": time.monotonic() + cfg.rpc_failure_backoff_seconds,
                 })
-            mempool_cache.update({"at": now, "transactions": normalized})
-            return list(normalized)
+                result = snapshot(False, True)
+            app.logger.warning(
+                "Public Core snapshot stale component=mempool cause=%s",
+                getattr(exc, "code", type(exc).__name__),
+            )
+            return result
 
-    def wallet_pending(connection: sqlite3.Connection, addresses: list[str]) -> tuple[list[dict[str, Any]], int, int]:
+        raw_by_txid = {
+            txid: transaction
+            for txid, transaction in zip(txids, decoded)
+            if isinstance(transaction, dict)
+        }
+        confirmed_prevouts: dict[tuple[str, int], tuple[str | None, int]] = {}
+        previous_pairs = {
+            (str(vin.get("txid", "")), int(vin.get("vout", -1)))
+            for transaction in raw_by_txid.values()
+            for vin in transaction.get("vin", [])
+            if vin.get("txid") and isinstance(vin.get("vout"), int)
+            and str(vin.get("txid")) not in raw_by_txid
+        }
+        for txid, vout in previous_pairs:
+            row = connection.execute(
+                "SELECT address, value_sats FROM tx_outputs WHERE txid = ? AND vout_index = ?",
+                (txid, vout),
+            ).fetchone()
+            if row is not None:
+                confirmed_prevouts[(txid, vout)] = (row["address"], int(row["value_sats"]))
+
+        def output_at(txid: str, vout: int) -> tuple[str | None, int] | None:
+            parent = raw_by_txid.get(txid)
+            if parent is not None:
+                for output in parent.get("vout", []):
+                    if int(output.get("n", -1)) != vout:
+                        continue
+                    script = output.get("scriptPubKey") or {}
+                    return script.get("address"), _sats(output.get("value", 0))
+            return confirmed_prevouts.get((txid, vout))
+
+        normalized: list[dict[str, Any]] = []
+        entry_by_txid = dict(ordered)
+        for txid in txids:
+            transaction = raw_by_txid.get(txid)
+            if transaction is None:
+                continue
+            inputs = []
+            for vin in transaction.get("vin", []):
+                if not vin.get("txid") or not isinstance(vin.get("vout"), int):
+                    continue
+                previous = output_at(str(vin["txid"]), int(vin["vout"]))
+                if previous is not None:
+                    inputs.append({"address": previous[0], "value_sats": previous[1]})
+            outputs = []
+            for output in transaction.get("vout", []):
+                script = output.get("scriptPubKey") or {}
+                outputs.append({
+                    "address": script.get("address"),
+                    "value_sats": _sats(output.get("value", 0)),
+                })
+            entry = entry_by_txid.get(txid) or {}
+            normalized.append({
+                "txid": txid,
+                "timestamp": int(entry.get("time", time.time())),
+                "fee_sats": _sats((entry.get("fees") or {}).get("base", 0)),
+                "inputs": inputs,
+                "outputs": outputs,
+            })
+        observed_at = int(time.time())
+        with mempool_cache_lock:
+            if generation != int(mempool_cache["generation"]):
+                mempool_cache["refreshing"] = False
+                result = snapshot(False, True)
+                retry_needed = True
+            else:
+                mempool_cache.update({
+                    "at": time.monotonic(),
+                    "retry_at": 0.0,
+                    "refreshing": False,
+                    "transactions": normalized,
+                    "observed_at": observed_at,
+                })
+                result = snapshot(True, False)
+                retry_needed = False
+        if retry_needed:
+            # A successful broadcast invalidated this refresh while it was in
+            # flight. Rebuild immediately so the newly relayed transaction is
+            # not hidden behind the old snapshot until the next UI poll.
+            return mempool_transactions(connection)
+        return result
+
+    def wallet_pending(
+        connection: sqlite3.Connection,
+        addresses: list[str],
+    ) -> tuple[list[dict[str, Any]], int, int, dict[str, Any]]:
         owned = set(addresses)
         transactions: list[dict[str, Any]] = []
         total_received = 0
         total_sent = 0
-        for transaction in mempool_transactions(connection):
+        mempool, pending_status = mempool_transactions(connection)
+        for transaction in mempool:
             received = sum(
                 int(output["value_sats"])
                 for output in transaction["outputs"]
@@ -282,7 +435,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 "is_coinbase": 0,
             })
         transactions.sort(key=lambda item: (item["timestamp"], item["txid"]), reverse=True)
-        return transactions, total_received, total_sent
+        return transactions, total_received, total_sent, pending_status
 
     @app.after_request
     def response_headers(response):
@@ -327,11 +480,12 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             "test_transaction",
             "broadcast_transaction",
         }
-        if request.endpoint in expensive_endpoints:
-            if not expensive_request_limiter.allow(client_address(), str(request.endpoint)):
-                response = json_error(429, "rate_limited", "Too many expensive wallet requests; retry shortly")
-                response[0].headers["Retry-After"] = "1"
-                return response
+        if request.endpoint in expensive_endpoints and not expensive_request_limiter.allow(
+            client_address(), str(request.endpoint)
+        ):
+            response = json_error(429, "rate_limited", "Too many expensive wallet requests; retry shortly")
+            response[0].headers["Retry-After"] = "1"
+            return response
         return None
 
     @app.errorhandler(RPCError)
@@ -440,9 +594,16 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         offset = (page - 1) * page_size
         with closing(database()) as connection:
             if include_pending:
-                pending, pending_received, pending_sent = wallet_pending(connection, addresses)
+                pending, pending_received, pending_sent, pending_status = wallet_pending(
+                    connection, addresses
+                )
             else:
                 pending, pending_received, pending_sent = [], 0, 0
+                pending_status = {
+                    "available": None,
+                    "stale": False,
+                    "observed_at": None,
+                }
             summary = connection.execute(
                 f"""
                 SELECT COALESCE(SUM(balance_sats), 0) AS balance_sats,
@@ -515,6 +676,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 "address_count": len(addresses),
                 "funded_addresses": [dict(row) for row in funded_rows],
                 "pending_included": include_pending,
+                "pending_status": pending_status,
                 "custody": "none",
             })
 
@@ -659,8 +821,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
         # A successful broadcast changes the mempool immediately. Do not let a
         # pre-broadcast read cache hide the wallet's new transaction for up to
         # MEMPOOL_CACHE_SECONDS.
-        with mempool_cache_lock:
-            mempool_cache.update({"at": 0.0, "transactions": []})
+        invalidate_mempool_cache()
         return jsonify({"txid": txid.lower()})
 
     return app

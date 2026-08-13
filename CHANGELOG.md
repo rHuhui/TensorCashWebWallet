@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.3 - 2026-08-13
+
+- Keep indexed wallet balances and confirmed transaction history available when
+  TensorCash Core RPC is briefly slow or unavailable.
+- Add bounded public-read RPC timeouts, last-known-good chain and mempool
+  snapshots, retry backoff, and single-refresh concurrency control.
+- Expose explicit stale/Core availability metadata so the wallet can warn users
+  without replacing valid indexed data with a generic 503 response.
+- Preserve strict fail-closed behavior for UTXO verification, transaction policy
+  testing, and transaction broadcast.
+- Add safe RPC operation/duration diagnostics without logging wallet addresses,
+  request bodies, credentials, or signed transactions.
+
 ## 1.0.2 - 2026-08-12
 
 - Changed hosted-build verification so the visitor's browser downloads the

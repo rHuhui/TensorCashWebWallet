@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
-import urllib.error
-import urllib.request
+import logging
+import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
+from urllib import error, request
 
+logger = logging.getLogger(__name__)
 
 class RPCError(RuntimeError):
     def __init__(self, code: int | str, message: str):
@@ -38,21 +41,37 @@ class RPCClient:
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.user or self.password:
-            raw = f"{self.user}:{self.password}".encode("utf-8")
+            raw = f"{self.user}:{self.password}".encode()
             headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
         return headers
 
-    def _request(self, payload: object) -> Any:
-        request = urllib.request.Request(
+    def _request(
+        self,
+        payload: object,
+        *,
+        timeout: float | None = None,
+        operation: str = "rpc",
+    ) -> Any:
+        rpc_request = request.Request(
             self.url,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
             headers=self._headers(),
             method="POST",
         )
+        started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with request.urlopen(
+                rpc_request,
+                timeout=self.timeout if timeout is None else timeout,
+            ) as response:
                 body = response.read(4 * 1024 * 1024 + 1)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (error.URLError, TimeoutError, OSError) as exc:
+            logger.warning(
+                "Core RPC transport failed operation=%s duration_ms=%d cause=%s",
+                operation,
+                round((time.monotonic() - started) * 1000),
+                type(exc).__name__,
+            )
             raise RPCError("unavailable", "TensorCash Core is unavailable") from exc
         if len(body) > 4 * 1024 * 1024:
             raise RPCError("response_too_large", "TensorCash Core response is too large")
@@ -61,11 +80,19 @@ class RPCClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RPCError("invalid_response", "TensorCash Core returned invalid JSON") from exc
 
-    def call(self, method: str, params: list[Any] | None = None) -> Any:
+    def call(
+        self,
+        method: str,
+        params: list[Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         if method not in self._ALLOWED:
             raise RPCError("method_denied", "RPC method is not allowed")
         response = self._request(
-            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []},
+            timeout=timeout,
+            operation=method,
         )
         if not isinstance(response, dict):
             raise RPCError("invalid_response", "TensorCash Core returned an invalid response")
@@ -76,7 +103,12 @@ class RPCClient:
             raise RPCError(error.get("code", "rpc_error"), error.get("message", "RPC error"))
         return response.get("result")
 
-    def batch(self, calls: Iterable[tuple[str, list[Any]]]) -> list[Any]:
+    def batch(
+        self,
+        calls: Iterable[tuple[str, list[Any]]],
+        *,
+        timeout: float | None = None,
+    ) -> list[Any]:
         payload = []
         for request_id, (method, params) in enumerate(calls, 1):
             if method not in self._ALLOWED:
@@ -86,7 +118,11 @@ class RPCClient:
             )
         if not payload:
             return []
-        response = self._request(payload)
+        response = self._request(
+            payload,
+            timeout=timeout,
+            operation=f"batch[{len(payload)}]",
+        )
         if not isinstance(response, list):
             raise RPCError("invalid_response", "TensorCash Core returned an invalid batch")
         indexed = {item.get("id"): item for item in response if isinstance(item, dict)}

@@ -92,6 +92,11 @@ export function getWalletOverview(addresses: string[], page = 1, includePending 
     address_count: number;
     funded_addresses: WalletAddressBalance[];
     pending_included: boolean;
+    pending_status?: {
+      available: boolean | null;
+      stale: boolean;
+      observed_at: number | null;
+    };
     custody: 'none';
   }>('/api/v1/wallet/overview', {
     method: 'POST',

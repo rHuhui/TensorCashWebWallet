@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 
 from server.app import create_app
 from server.config import Settings
-
+from server.rpc import RPCError
 
 ADDRESS = "tc1qg83etpvnwl8jqrexs3zsnpvpcvepwg2xduejel"
 ADDRESS_2 = "tc1q9wpysjvsjcz0t945h6cr9n6sfkh9c5w7c9008d"
@@ -25,9 +26,12 @@ class FakeRPC:
         self.mempool: dict[str, dict] = {}
         self.raw_transactions: dict[str, dict] = {}
         self.batch_sizes: list[int] = []
+        self.fail_methods: set[str] = set()
 
     def call(self, method, params=None):
         self.calls.append((method, params or []))
+        if method in self.fail_methods:
+            raise RPCError("unavailable", "simulated Core outage")
         if method == "validateaddress":
             return {"isvalid": True}
         if method == "getblockchaininfo":
@@ -44,6 +48,8 @@ class FakeRPC:
 
     def batch(self, calls):
         calls = list(calls)
+        if "batch" in self.fail_methods:
+            raise RPCError("unavailable", "simulated Core outage")
         self.batch_sizes.append(len(calls))
         self.calls.extend(calls)
         if calls and all(method == "getrawtransaction" for method, _params in calls):
@@ -205,6 +211,106 @@ def test_wallet_overview_can_return_confirmed_data_without_waiting_for_mempool(w
     assert not any(method == "getrawmempool" for method, _params in rpc.calls)
 
 
+def test_confirmed_wallet_data_degrades_instead_of_503_when_core_is_unavailable(wallet_app):
+    app, rpc = wallet_app
+    rpc.fail_methods.add("getblockchaininfo")
+
+    response = app.test_client().post(
+        "/api/v1/wallet/overview",
+        json={"addresses": [ADDRESS], "include_pending": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["address"]["balance_sats"] == 125_000_000
+    assert payload["status"] == {
+        "network": "unknown",
+        "core_height": 100,
+        "header_height": 100,
+        "indexed_height": 100,
+        "lag": 0,
+        "synced": False,
+        "observed_at": payload["status"]["observed_at"],
+        "core_available": False,
+        "stale": True,
+        "status_source": "index",
+    }
+
+
+def test_mempool_outage_preserves_confirmed_wallet_and_reports_stale_state(wallet_app):
+    app, rpc = wallet_app
+    rpc.fail_methods.add("getrawmempool")
+
+    response = app.test_client().post(
+        "/api/v1/wallet/overview",
+        json={"addresses": [ADDRESS], "include_pending": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["address"]["balance_sats"] == 125_000_000
+    assert payload["transactions"][0]["status"] == "confirmed"
+    assert payload["pending_status"] == {
+        "available": False,
+        "stale": True,
+        "observed_at": None,
+    }
+
+
+def test_transaction_relay_still_fails_closed_when_core_is_unavailable(wallet_app):
+    app, rpc = wallet_app
+    rpc.fail_methods.add("testmempoolaccept")
+
+    response = app.test_client().post(
+        "/api/v1/transactions/broadcast",
+        json={"signed_tx": "00"},
+        headers={"Origin": "https://wallet.example"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["error"]["code"] == "core_unavailable"
+    assert not any(method == "sendrawtransaction" for method, _params in rpc.calls)
+
+
+def test_concurrent_status_read_uses_index_while_core_refresh_is_in_flight(wallet_app):
+    app, rpc = wallet_app
+    entered = threading.Event()
+    release = threading.Event()
+    original_call = rpc.call
+
+    def blocking(method, params=None):
+        if method == "getblockchaininfo":
+            entered.set()
+            assert release.wait(2)
+        return original_call(method, params)
+
+    rpc.call = blocking
+    result: dict[str, object] = {}
+
+    def refresh_status():
+        with app.test_client() as client:
+            response = client.get("/api/v1/status")
+            result.update(status_code=response.status_code, payload=response.get_json())
+
+    thread = threading.Thread(target=refresh_status)
+    thread.start()
+    assert entered.wait(1)
+
+    with app.test_client() as client:
+        concurrent = client.post(
+            "/api/v1/wallet/overview",
+            json={"addresses": [ADDRESS], "include_pending": False},
+        )
+
+    assert concurrent.status_code == 200
+    assert concurrent.get_json()["status"]["status_source"] == "index"
+    assert concurrent.get_json()["status"]["stale"] is True
+    release.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert result["status_code"] == 200
+
+
 def test_wallet_overview_rejects_invalid_or_excessive_watch_sets(wallet_app):
     app, _ = wallet_app
     client = app.test_client()
@@ -299,6 +405,36 @@ def test_successful_broadcast_invalidates_wallet_mempool_cache(wallet_app):
     assert response.status_code == 200
     assert client.post("/api/v1/wallet/overview", json=overview).status_code == 200
     assert sum(method == "getrawmempool" for method, _params in rpc.calls) == 2
+
+
+def test_failed_post_broadcast_refresh_keeps_last_mempool_snapshot(wallet_app):
+    app, rpc = wallet_app
+    pending_txid = "55" * 32
+    rpc.mempool[pending_txid] = {"time": 1_800_000_000, "fees": {"base": 0.00001}}
+    rpc.raw_transactions[pending_txid] = {
+        "vin": [],
+        "vout": [{
+            "n": 0,
+            "value": 0.5,
+            "scriptPubKey": {"address": ADDRESS, "hex": SCRIPT},
+        }],
+    }
+    client = app.test_client()
+    overview = {"addresses": [ADDRESS], "page": 1, "page_size": 25}
+    first = client.post("/api/v1/wallet/overview", json=overview).get_json()
+    assert first["transactions"][0]["txid"] == pending_txid
+
+    assert client.post(
+        "/api/v1/transactions/broadcast",
+        json={"signed_tx": "00"},
+        headers={"Origin": "https://wallet.example"},
+    ).status_code == 200
+    rpc.fail_methods.add("getrawmempool")
+    stale = client.post("/api/v1/wallet/overview", json=overview).get_json()
+
+    assert stale["transactions"][0]["txid"] == pending_txid
+    assert stale["pending_status"]["stale"] is True
+    assert stale["pending_status"]["observed_at"] is not None
 
 
 def test_transaction_hex_is_bounded_and_validated(wallet_app):
