@@ -128,7 +128,7 @@ The gateway reads process environment variables; no secrets are compiled into it
 | `TSCWALLET_RPC_FAILURE_BACKOFF_SECONDS` | Delay before retrying a failed public snapshot | `5` seconds |
 | `TSCWALLET_RPC_BATCH_SIZE` | Maximum Core calls in one JSON-RPC batch | `50` |
 | `TSCWALLET_UTXO_CANDIDATE_LIMIT` | Maximum indexed UTXO candidates per wallet query | `500` |
-| `TSCWALLET_MEMPOOL_LIMIT` | Maximum mempool transactions decoded per cache fill | `500` |
+| `TSCWALLET_MEMPOOL_LIMIT` | Maximum mempool transactions decoded per cache fill (`0` means the complete mempool and is recommended for wallet correctness) | `0` |
 | `TSCWALLET_PUBLIC_READ_RATE` | Per-IP refill rate for expensive wallet/Core operations | `2` requests/second |
 | `TSCWALLET_PUBLIC_READ_BURST` | Per-IP burst for expensive wallet/Core operations | `12` |
 | `TSCWALLET_MAX_PAGE` | Maximum accepted API page number | `10000` |

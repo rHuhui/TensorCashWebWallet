@@ -306,7 +306,9 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 entries.items(),
                 key=lambda item: int((item[1] or {}).get("time", 0)),
                 reverse=True,
-            )[:cfg.mempool_transaction_limit]
+            )
+            if cfg.mempool_transaction_limit > 0:
+                ordered = ordered[:cfg.mempool_transaction_limit]
             txids = [txid for txid, _entry in ordered]
             missing_txids = [txid for txid in txids if txid not in cached_raw_transactions]
             decoded = core_batch_chunked(

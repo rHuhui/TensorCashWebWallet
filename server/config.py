@@ -28,7 +28,9 @@ class Settings:
     max_transaction_bytes: int = 500_000
     rpc_batch_size: int = 50
     utxo_candidate_limit: int = 500
-    mempool_transaction_limit: int = 500
+    # Zero means the complete mempool. Silently truncating this snapshot makes
+    # older, still-valid pending wallet transactions disappear from balances.
+    mempool_transaction_limit: int = 0
     public_read_rate: float = 2.0
     public_read_burst: int = 12
     overview_read_rate: float = 50.0
@@ -74,7 +76,9 @@ class Settings:
             ),
             rpc_batch_size=max(1, min(100, int(os.getenv("TSCWALLET_RPC_BATCH_SIZE", "50")))),
             utxo_candidate_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_UTXO_CANDIDATE_LIMIT", "500")))),
-            mempool_transaction_limit=max(50, min(1_000, int(os.getenv("TSCWALLET_MEMPOOL_LIMIT", "500")))),
+            mempool_transaction_limit=max(
+                0, min(100_000, int(os.getenv("TSCWALLET_MEMPOOL_LIMIT", "0")))
+            ),
             public_read_rate=max(0.1, float(os.getenv("TSCWALLET_PUBLIC_READ_RATE", "2"))),
             public_read_burst=max(2, int(os.getenv("TSCWALLET_PUBLIC_READ_BURST", "12"))),
             overview_read_rate=max(

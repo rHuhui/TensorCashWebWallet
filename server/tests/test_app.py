@@ -227,6 +227,40 @@ def test_pending_lookup_uses_address_index_not_full_mempool_scan(wallet_app):
     assert [row["txid"] for row in payload["transactions"] if row["status"] == "pending"] == [related]
 
 
+def test_pending_lookup_does_not_drop_an_older_transaction_from_a_large_mempool(wallet_app):
+    app, rpc = wallet_app
+    related = "fe" * 32
+    unrelated = [f"{10_000 + index:064x}" for index in range(600)]
+    rpc.mempool = {
+        related: {"time": 1_700_000_000, "fees": {"base": 0.00001}},
+        **{
+            txid: {"time": 1_800_000_000 + index, "fees": {"base": 0.00001}}
+            for index, txid in enumerate(unrelated)
+        },
+    }
+    rpc.raw_transactions = {
+        related: {
+            "vin": [],
+            "vout": [{"n": 0, "value": 0.3, "scriptPubKey": {"address": ADDRESS}}],
+        },
+        **{
+            txid: {
+                "vin": [],
+                "vout": [{"n": 0, "value": 0.001, "scriptPubKey": {"address": ADDRESS_2}}],
+            }
+            for txid in unrelated
+        },
+    }
+
+    payload = app.test_client().post(
+        "/api/v1/wallet/overview", json={"addresses": [ADDRESS]}
+    ).get_json()
+
+    assert payload["address"]["pending_received_sats"] == 30_000_000
+    assert [row["txid"] for row in payload["transactions"] if row["status"] == "pending"] == [related]
+    assert max(rpc.batch_sizes) <= 50
+
+
 def test_pending_send_resolves_confirmed_prevout_in_one_snapshot(wallet_app):
     app, rpc = wallet_app
     spending_txid = "aa" * 32
