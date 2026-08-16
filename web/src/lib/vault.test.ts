@@ -68,6 +68,26 @@ describe('encrypted wallet vault', () => {
     );
   }, 30_000);
 
+  it('keeps the encrypted envelope valid when the separately stored receive count advances', async () => {
+    const source = material();
+    const vault = await encryptWallet(source, 'a secure test password', {
+      memoryKiB: 32_768,
+      iterations: 2,
+    });
+    const authenticatedEnvelope = JSON.parse(JSON.stringify(vault)) as typeof vault;
+    const independentlyStoredReceiveCount = (vault.receiveAddressCount ?? 1) + 1;
+
+    // UI state may expose more already-derived addresses, but it must never be
+    // merged into the AES-GCM authenticated envelope before decryption.
+    expect(independentlyStoredReceiveCount).toBe(2);
+    expect((await decryptWallet(authenticatedEnvelope, 'a secure test password')).walletId).toBe(source.walletId);
+    await expect(decryptWallet({
+      ...authenticatedEnvelope,
+      receiveAddresses: [...(authenticatedEnvelope.receiveAddresses ?? []), source.address],
+      receiveAddressCount: independentlyStoredReceiveCount,
+    }, 'a secure test password')).rejects.toThrow('Incorrect password or damaged wallet backup');
+  }, 30_000);
+
   it('authenticates a user supplied wallet name', async () => {
     const source = material();
     const vault = await encryptWallet(source, 'a secure test password', {

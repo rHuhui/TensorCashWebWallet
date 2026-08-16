@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.5 - 2026-08-16
+
+- Preserve the authenticated encrypted-wallet envelope when receive-address UI
+  state advances, preventing valid existing passwords from being rejected.
+- Retain the original Argon2id/AES-256-GCM format and six-character legacy
+  unlock compatibility; existing wallets and backups require no migration.
+- Enrich confirmed and pending wallet history with source, recipient, input,
+  and output addresses while filtering wallet-owned change from counterparties.
+- Accumulate multiple live incoming payments and show From/To details in both
+  receive and send monitors.
+- Collapse duplicate overview reads into one request and deduplicate concurrent
+  identical gateway calls.
+- Improve pending activity feedback, wallet switching, contextual icons, and
+  password-entry diagnostics without retaining decrypted wallet material.
+
 ## 1.0.4 - 2026-08-13
 
 - Add standard TensorCash P2WSH recipient support while preserving P2WPKH-only

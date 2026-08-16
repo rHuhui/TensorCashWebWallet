@@ -39,6 +39,12 @@ export function createLocalPendingTransaction(
     transfer_sats: plan.amountSats,
     fee_sats: plan.feeSats,
     is_coinbase: 0,
+    from_addresses: [],
+    to_addresses: plan.outputs
+      .filter((output) => !owned.has(output.address.toLowerCase()))
+      .map((output) => ({ address: output.address, value_sats: output.valueSats })),
+    input_addresses: plan.inputs.map((input) => ({ address: input.address, value_sats: input.value_sats })),
+    output_addresses: plan.outputs.map((output) => ({ address: output.address, value_sats: output.valueSats })),
   };
 }
 

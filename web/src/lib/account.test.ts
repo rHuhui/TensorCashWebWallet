@@ -57,6 +57,12 @@ describe('locally broadcast wallet activity', () => {
       delta_sats: -25_000_141,
       transfer_sats: 25_000_000,
       fee_sats: 141,
+      input_addresses: [{ address: SOURCE, value_sats: 100_000_000 }],
+      to_addresses: [{ address: DESTINATION, value_sats: 25_000_000 }],
+      output_addresses: [
+        { address: DESTINATION, value_sats: 25_000_000 },
+        { address: CHANGE, value_sats: 74_999_859 },
+      ],
     });
     expect(addPendingToSummary(summary, pending)).toMatchObject({
       unconfirmed_balance_sats: -25_000_141,

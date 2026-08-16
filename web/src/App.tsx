@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import packageMetadata from '../package.json';
 import { importOfficialWalletExport } from './lib/mldsa';
 import {
@@ -113,41 +113,15 @@ function relativeTime(timestamp: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function issuedReceiveAddresses(vault: EncryptedVault): string[] {
+function issuedReceiveAddresses(vault: EncryptedVault, exposedCount = vault.receiveAddressCount ?? 1): string[] {
   const addresses = vault.receiveAddresses?.length ? vault.receiveAddresses : [vault.address];
-  const count = Math.max(1, Math.min(addresses.length, vault.receiveAddressCount ?? 1));
+  const count = Math.max(1, Math.min(addresses.length, exposedCount));
   return addresses.slice(0, count);
 }
 
-function currentReceiveAddress(vault: EncryptedVault): string {
-  const addresses = issuedReceiveAddresses(vault);
+function currentReceiveAddress(vault: EncryptedVault, exposedCount = vault.receiveAddressCount ?? 1): string {
+  const addresses = issuedReceiveAddresses(vault, exposedCount);
   return addresses[addresses.length - 1] ?? vault.address;
-}
-
-function mergeConfirmedSummary(confirmed: AddressSummary, current: AddressSummary | null): AddressSummary {
-  if (!current) return confirmed;
-  return {
-    ...confirmed,
-    unconfirmed_balance_sats: current.unconfirmed_balance_sats ?? 0,
-    pending_received_sats: current.pending_received_sats ?? 0,
-    pending_sent_sats: current.pending_sent_sats ?? 0,
-    tx_count: Math.max(confirmed.tx_count, current.tx_count),
-  };
-}
-
-function mergeConfirmedTransactions(
-  confirmed: AddressTransaction[],
-  current: AddressTransaction[],
-): AddressTransaction[] {
-  const merged = new Map(confirmed.map((transaction) => [transaction.txid, transaction]));
-  current.forEach((transaction) => {
-    if (transaction.status === 'pending' && !merged.has(transaction.txid)) {
-      merged.set(transaction.txid, transaction);
-    }
-  });
-  return [...merged.values()]
-    .sort((left, right) => right.timestamp - left.timestamp || left.txid.localeCompare(right.txid))
-    .slice(0, 25);
 }
 
 function Logo() {
@@ -177,6 +151,34 @@ function SecurityIcon() {
       <path fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" d="m8.5 12.1 2.2 2.2 4.9-5" />
     </svg>
   );
+}
+
+function WalletSwitchIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h13.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2h11"/><path d="M15.5 11.5H22v4h-6.5a2 2 0 0 1 0-4Z"/><circle cx="17" cy="13.5" r=".7"/></svg>;
+}
+
+function ManageWalletsIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="13" height="10" rx="2"/><path d="M8 19h11a2 2 0 0 0 2-2V9M6.5 9h6"/></svg>;
+}
+
+function ReceiveToolIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>;
+}
+
+function SendToolIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5m0 0 4 4m-4-4L8 9"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>;
+}
+
+function TransactionsToolIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13m0 0-3-3m3 3-3 3M20 17H7m0 0 3 3m-3-3 3-3"/></svg>;
+}
+
+function SettingsToolIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10m4 0h2M4 12h3m4 0h9M4 18h8m4 0h4"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></svg>;
+}
+
+function LiveSendIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 20V7m0 0 5 5m-5-5-5 5"/><path d="M8 24h16M10.5 28h11"/></svg>;
 }
 
 function StatusBadge({ status, error }: { status: ChainStatus | null; error?: string }) {
@@ -254,11 +256,11 @@ function EmptyHome({ onCreate, onImport }: { onCreate: () => void; onImport: () 
 }
 
 function ToolsMenu({ onView, sendEnabled }: { onView: (view: View) => void; sendEnabled: boolean }) {
-  const items: Array<[View, string, string, string]> = [
-    ['receive', 'Receive', '↓', 'Address and derivation'],
-    ['send', 'Send', '↑', 'Prepare a transfer'],
-    ['activity', 'Transactions', '≋', 'Complete wallet history'],
-    ['settings', 'Settings', '◇', 'Security, backup and gateway'],
+  const items: Array<[View, string, ReactNode, string]> = [
+    ['receive', 'Receive', <ReceiveToolIcon />, 'Address and derivation'],
+    ['send', 'Send', <SendToolIcon />, 'Prepare a transfer'],
+    ['activity', 'Transactions', <TransactionsToolIcon />, 'Complete wallet history'],
+    ['settings', 'Settings', <SettingsToolIcon />, 'Security, backup and gateway'],
   ];
   return (
     <section className="content-card tools-bar" aria-label="Wallet tools">
@@ -316,8 +318,9 @@ function TransactionFilters({ transactions, filter, onChange, compact = false }:
   );
 }
 
-function Overview({ vault, summary, status, transactions, fundedAddresses, loading, showBackup, onCopy, onBackup, onReceive, onView }: {
+function Overview({ vault, receiveAddressCount, summary, status, transactions, fundedAddresses, loading, showBackup, onCopy, onBackup, onReceive, onView }: {
   vault: EncryptedVault;
+  receiveAddressCount: number;
   summary: AddressSummary | null;
   status: ChainStatus | null;
   transactions: AddressTransaction[];
@@ -329,7 +332,7 @@ function Overview({ vault, summary, status, transactions, fundedAddresses, loadi
   onReceive: () => void;
   onView: (view: View) => void;
 }) {
-  const receiveAddress = currentReceiveAddress(vault);
+  const receiveAddress = currentReceiveAddress(vault, receiveAddressCount);
   const unconfirmed = summary?.unconfirmed_balance_sats ?? 0;
   const pendingTransactions = transactions.filter(isPendingTransaction);
   const pendingDisplaySats = pendingTransactions.length
@@ -393,13 +396,14 @@ function Overview({ vault, summary, status, transactions, fundedAddresses, loadi
   );
 }
 
-function AddressBalancesPanel({ vault, addresses, onCopy }: {
+function AddressBalancesPanel({ vault, receiveAddressCount, addresses, onCopy }: {
   vault: EncryptedVault;
+  receiveAddressCount: number;
   addresses: WalletAddressBalance[];
   onCopy: (value: string) => void;
 }) {
-  const current = currentReceiveAddress(vault);
-  const receiveAddresses = vault.receiveAddresses?.length ? vault.receiveAddresses : issuedReceiveAddresses(vault);
+  const current = currentReceiveAddress(vault, receiveAddressCount);
+  const receiveAddresses = vault.receiveAddresses?.length ? vault.receiveAddresses : issuedReceiveAddresses(vault, receiveAddressCount);
   const total = addresses.reduce((sum, item) => sum + item.balance_sats, 0);
   return (
     <section className="content-card funded-addresses enter">
@@ -429,14 +433,15 @@ function AddressBalancesPanel({ vault, addresses, onCopy }: {
   );
 }
 
-function ReceivePanel({ vault, onCopy, onGenerate, onSelect, generating = false }: {
+function ReceivePanel({ vault, receiveAddressCount, onCopy, onGenerate, onSelect, generating = false }: {
   vault: EncryptedVault;
+  receiveAddressCount: number;
   onCopy: (value: string) => void;
   onGenerate: () => Promise<void>;
   onSelect: (address: string) => void;
   generating?: boolean;
 }) {
-  const addresses = issuedReceiveAddresses(vault);
+  const addresses = issuedReceiveAddresses(vault, receiveAddressCount);
   const current = addresses[addresses.length - 1] ?? vault.address;
   const monitored = vault.addresses?.length ?? addresses.length;
   return (
@@ -486,24 +491,33 @@ function ReceivePanel({ vault, onCopy, onGenerate, onSelect, generating = false 
 
 type ReceiveWatchPhase = 'waiting' | 'pending' | 'confirmed';
 
-function incomingPayment(transactions: AddressTransaction[], baseline: Set<string>, openedAt: number, watchedTxid = '') {
+function incomingPayments(transactions: AddressTransaction[], baseline: Set<string>, openedAt: number) {
   const incoming = transactions.filter((transaction) => transaction.received_sats > 0 && transaction.delta_sats > 0);
-  if (watchedTxid) return incoming.find((transaction) => transaction.txid === watchedTxid) ?? null;
-  return incoming.find((transaction) => !baseline.has(transaction.txid) && (isPendingTransaction(transaction) || transaction.timestamp >= openedAt - 2)) ?? null;
+  return incoming.filter((transaction) => !baseline.has(transaction.txid) && (isPendingTransaction(transaction) || transaction.timestamp >= openedAt - 2));
+}
+
+function TransactionParties({ parties, empty }: {
+  parties: AddressTransaction['input_addresses'];
+  empty: string;
+}) {
+  if (!parties?.length) return <>{empty}</>;
+  return <>{parties.map((party, index) => <span className="transaction-party" key={`${party.address}-${index}`}>
+    <a href={explorerAddressUrl(party.address)} target="_blank" rel="noreferrer" title={party.address}>{short(party.address, 14, 10)}</a>
+    {index < parties.length - 1 ? <i aria-hidden="true">, </i> : null}
+  </span>)}</>;
 }
 
 function ReceiveWatchModal({ address, onClose, onCopy }: { address: string; onClose: () => void; onCopy: (value: string) => void }) {
   const openedAt = useRef(Math.floor(Date.now() / 1000));
   const baseline = useRef<Set<string> | null>(null);
-  const watchedTxid = useRef('');
+  const tracked = useRef(new Map<string, AddressTransaction>());
   const [phase, setPhase] = useState<ReceiveWatchPhase>('waiting');
-  const [payment, setPayment] = useState<AddressTransaction | null>(null);
+  const [payments, setPayments] = useState<AddressTransaction[]>([]);
   const [height, setHeight] = useState<number | null>(null);
   const [connection, setConnection] = useState<'connected' | 'retrying'>('connected');
 
   useEffect(() => {
     let stopped = false;
-    let completed = false;
     let pollTimer: number | undefined;
     const poll = async () => {
       try {
@@ -515,21 +529,17 @@ function ReceiveWatchModal({ address, onClose, onCopy }: { address: string; onCl
         if (!baseline.current) {
           baseline.current = new Set(received.filter((transaction) => !isPendingTransaction(transaction) && transaction.timestamp < openedAt.current - 2).map((transaction) => transaction.txid));
         }
-        const next = incomingPayment(account.transactions, baseline.current, openedAt.current, watchedTxid.current);
-        if (next) {
-          watchedTxid.current = next.txid;
-          setPayment(next);
-          if (isPendingTransaction(next)) {
-            setPhase('pending');
-          } else {
-            setPhase('confirmed');
-            completed = true;
-          }
-        }
+        incomingPayments(account.transactions, baseline.current, openedAt.current).forEach((transaction) => {
+          tracked.current.set(transaction.txid, transaction);
+        });
+        const next = [...tracked.current.values()]
+          .sort((left, right) => right.timestamp - left.timestamp || left.txid.localeCompare(right.txid));
+        setPayments(next);
+        setPhase(next.length === 0 ? 'waiting' : next.some(isPendingTransaction) ? 'pending' : 'confirmed');
       } catch {
         if (!stopped) setConnection('retrying');
       } finally {
-        if (!stopped && !completed) pollTimer = window.setTimeout(poll, 2_500);
+        if (!stopped) pollTimer = window.setTimeout(poll, 2_500);
       }
     };
     void poll();
@@ -543,16 +553,22 @@ function ReceiveWatchModal({ address, onClose, onCopy }: { address: string; onCl
     <section className="receive-monitor" role="dialog" aria-modal="true" aria-labelledby="receive-monitor-title">
       <button className="receive-monitor-close" aria-label="Close payment monitor" onClick={onClose}>×</button>
       <div className={`receive-monitor-state ${phase}`} aria-hidden="true">
-        <span className="monitor-symbol">{phase === 'waiting' ? '⌁' : '…'}</span>
+        <span className="monitor-symbol"><ReceiveToolIcon /></span>
         <svg className="monitor-check" viewBox="0 0 32 32"><path d="m8 16.5 5.2 5.2L24.5 10" /></svg>
       </div>
       <p className="eyebrow">{phase === 'waiting' ? 'READY TO RECEIVE' : phase === 'pending' ? 'MEMPOOL DETECTED' : 'PAYMENT CONFIRMED'}</p>
-      <h2 id="receive-monitor-title">{phase === 'waiting' ? 'Waiting for payment' : phase === 'pending' ? 'Payment is on the way' : 'TSC received'}</h2>
-      <p className="receive-monitor-lead">{phase === 'waiting' ? 'Keep this window open. The wallet checks the latest mempool and confirmed blocks automatically.' : phase === 'pending' ? 'The transaction is visible in the TensorCash mempool and is waiting to enter a block.' : 'The payment has entered the confirmed chain. Close this window whenever you are ready.'}</p>
+      <h2 id="receive-monitor-title">{phase === 'waiting' ? 'Waiting for payment' : phase === 'pending' ? `${payments.length} payment${payments.length === 1 ? '' : 's'} detected` : `${payments.length} payment${payments.length === 1 ? '' : 's'} received`}</h2>
+      <p className="receive-monitor-lead">{phase === 'waiting' ? 'Keep this window open. The wallet checks the latest mempool and confirmed blocks automatically.' : phase === 'pending' ? 'New payments keep appearing here while this window remains open. Pending entries update individually after confirmation.' : 'All detected payments are confirmed. This monitor stays active for additional transfers until you close it.'}</p>
       <div className="receive-monitor-address"><span>Receive address</span><code>{address}</code><button onClick={() => onCopy(address)}>Copy</button></div>
-      {payment && <div className="receive-monitor-payment">
-        <span><small>Amount received</small><strong>+{formatTsc(payment.received_sats)} TSC</strong></span>
-        <a href={explorerTransactionUrl(payment.txid)} target="_blank" rel="noreferrer"><small>Transaction</small><strong>{short(payment.txid, 15, 12)} ↗</strong></a>
+      {payments.length > 0 && <div className="receive-monitor-payments" aria-label="Payments detected in this session">
+        {payments.map((payment) => <article className={isPendingTransaction(payment) ? 'pending' : 'confirmed'} key={payment.txid}>
+          <header><span><small>Amount received</small><strong>+{formatTsc(payment.received_sats)} TSC</strong></span><em><i />{isPendingTransaction(payment) ? 'Pending' : 'Confirmed'}</em></header>
+          <dl>
+            <div><dt>From</dt><dd><TransactionParties parties={payment.from_addresses} empty="Source address unavailable" /></dd></div>
+            <div><dt>To</dt><dd><a href={explorerAddressUrl(address)} target="_blank" rel="noreferrer" title={address}>{short(address, 14, 10)}</a></dd></div>
+            <div><dt>Transaction</dt><dd><a href={explorerTransactionUrl(payment.txid)} target="_blank" rel="noreferrer" title={payment.txid}>{short(payment.txid, 14, 10)} ↗</a></dd></div>
+          </dl>
+        </article>)}
       </div>}
       <div className="receive-monitor-footer"><span className={connection}><i />{connection === 'connected' ? `Live · block ${height?.toLocaleString() ?? '—'}` : 'Connection interrupted · retrying'}</span><a href={explorerAddressUrl(address)} target="_blank" rel="noreferrer">Open in tscscan.xyz ↗</a></div>
     </section>
@@ -565,10 +581,20 @@ function SendWatchModal({ transaction, addresses, onClose }: {
   onClose: () => void;
 }) {
   const [phase, setPhase] = useState<'pending' | 'confirmed'>('pending');
+  const [trackedTransaction, setTrackedTransaction] = useState(transaction);
   const [height, setHeight] = useState<number | null>(null);
   const [connection, setConnection] = useState<'connected' | 'retrying'>('connected');
-  const amountSats = transaction.transfer_sats
-    ?? Math.max(0, transaction.sent_sats - transaction.received_sats - (transaction.fee_sats ?? 0));
+  const amountSats = trackedTransaction.transfer_sats
+    ?? transaction.transfer_sats
+    ?? Math.max(0, trackedTransaction.sent_sats - trackedTransaction.received_sats - (trackedTransaction.fee_sats ?? 0));
+  const inputAddresses = trackedTransaction.input_addresses?.length
+    ? trackedTransaction.input_addresses
+    : transaction.input_addresses;
+  const recipientAddresses = trackedTransaction.to_addresses?.length
+    ? trackedTransaction.to_addresses
+    : transaction.to_addresses?.length
+      ? transaction.to_addresses
+      : trackedTransaction.output_addresses;
 
   useEffect(() => {
     let stopped = false;
@@ -581,6 +607,17 @@ function SendWatchModal({ transaction, addresses, onClose }: {
         setConnection('connected');
         setHeight(account.status.indexed_height);
         const remote = account.transactions.find((item) => item.txid === transaction.txid);
+        if (remote) {
+          setTrackedTransaction({
+            ...transaction,
+            ...remote,
+            transfer_sats: transaction.transfer_sats ?? remote.transfer_sats,
+            input_addresses: remote.input_addresses?.length ? remote.input_addresses : transaction.input_addresses,
+            output_addresses: remote.output_addresses?.length ? remote.output_addresses : transaction.output_addresses,
+            from_addresses: remote.from_addresses?.length ? remote.from_addresses : transaction.from_addresses,
+            to_addresses: remote.to_addresses?.length ? remote.to_addresses : transaction.to_addresses,
+          });
+        }
         if (remote && !isPendingTransaction(remote)) {
           setPhase('confirmed');
           completed = true;
@@ -602,7 +639,7 @@ function SendWatchModal({ transaction, addresses, onClose }: {
     <section className="receive-monitor send-monitor" role="dialog" aria-modal="true" aria-labelledby="send-monitor-title">
       <button className="receive-monitor-close" aria-label="Close transaction monitor" onClick={onClose}>×</button>
       <div className={`receive-monitor-state ${phase}`} aria-hidden="true">
-        <span className="monitor-symbol">↑</span>
+        <span className="monitor-symbol"><LiveSendIcon /></span>
         <svg className="monitor-check" viewBox="0 0 32 32"><path d="m8 16.5 5.2 5.2L24.5 10" /></svg>
       </div>
       <p className="eyebrow">{phase === 'pending' ? 'TRANSACTION BROADCAST' : 'SEND CONFIRMED'}</p>
@@ -612,6 +649,10 @@ function SendWatchModal({ transaction, addresses, onClose }: {
         <span><small>Amount sent</small><strong>−{formatTsc(amountSats)} TSC</strong></span>
         <a href={explorerTransactionUrl(transaction.txid)} target="_blank" rel="noreferrer"><small>Transaction</small><strong>{short(transaction.txid, 15, 12)} ↗</strong></a>
       </div>
+      <dl className="send-monitor-route">
+        <div><dt>From</dt><dd><TransactionParties parties={inputAddresses} empty="Wallet input address unavailable" /></dd></div>
+        <div><dt>To</dt><dd><TransactionParties parties={recipientAddresses} empty="Recipient address unavailable" /></dd></div>
+      </dl>
       <div className="receive-monitor-footer"><span className={connection}><i />{connection === 'connected' ? `Live · block ${height?.toLocaleString() ?? '—'}` : 'Connection interrupted · retrying'}</span><a href={explorerTransactionUrl(transaction.txid)} target="_blank" rel="noreferrer">Open in tscscan.xyz ↗</a></div>
     </section>
   </div>;
@@ -630,10 +671,21 @@ function TransactionTable({ transactions, address, loading = false }: { transact
         const pending = transaction.status === 'pending' || transaction.block_height === null;
         const displayDelta = pending ? userFacingTransactionDelta(transaction) : transaction.delta_sats;
         const received = displayDelta >= 0;
+        const counterparties = received ? transaction.from_addresses ?? [] : transaction.to_addresses ?? [];
+        const counterparty = counterparties[0];
+        const counterpartyLabel = transaction.is_coinbase ? 'Source' : received ? 'From' : 'To';
         return (
           <div className={`transaction-row ${pending ? 'pending' : ''}`} key={transaction.txid}>
-            <span className={`tx-icon ${received ? 'received' : 'sent'}`}>{pending ? '•' : received ? '↓' : '↑'}</span>
-            <div className="tx-main"><strong>{pending ? 'Pending transaction' : received ? (transaction.is_coinbase ? 'Block reward' : 'Received') : 'Sent'}</strong><a href={explorerTransactionUrl(transaction.txid)} target="_blank" rel="noreferrer" title={`View ${transaction.txid} on TSC Scan`}>{short(transaction.txid, 12, 10)} <span aria-hidden="true">↗</span></a></div>
+            <span className={`tx-icon ${received ? 'received' : 'sent'}`}><span>{received ? '↓' : '↑'}</span>{pending && <i />}</span>
+            <div className="tx-main">
+              <div className="tx-title"><strong>{received ? (transaction.is_coinbase ? 'Block reward' : 'Received') : 'Sent'}</strong>{pending && <span className="tx-pending-badge"><i /> Pending</span>}</div>
+              <div className="tx-counterparty"><small>{counterpartyLabel}</small>{transaction.is_coinbase
+                ? <span>TensorCash block subsidy</span>
+                : counterparty
+                  ? <><a href={explorerAddressUrl(counterparty.address)} target="_blank" rel="noreferrer" title={counterparty.address}>{short(counterparty.address, 14, 10)}</a>{counterparties.length > 1 && <em>+{counterparties.length - 1}</em>}</>
+                  : <span>{received ? 'Sender address unavailable' : 'Recipient address unavailable'}</span>}</div>
+              <a className="tx-id" href={explorerTransactionUrl(transaction.txid)} target="_blank" rel="noreferrer" title={`View ${transaction.txid} on TSC Scan`}>{short(transaction.txid, 12, 10)} <span aria-hidden="true">↗</span></a>
+            </div>
             <div className="tx-block"><small>{pending ? 'Status' : 'Block'}</small><span>{pending ? 'Unconfirmed' : transaction.block_height?.toLocaleString()}</span></div>
             <div className={`tx-value ${received ? 'received' : 'sent'}`}><strong>{received ? '+' : '−'}{formatTsc(Math.abs(displayDelta))} TSC</strong><small>{relativeTime(transaction.timestamp)}</small></div>
           </div>
@@ -695,6 +747,57 @@ function ToolDrawer({ title, onClose, children }: { title: string; onClose: () =
       </aside>
     </div>
   );
+}
+
+function WalletSwitcher({ wallets, active, switching, onSwitch, onManage }: {
+  wallets: EncryptedVault[];
+  active: EncryptedVault;
+  switching: boolean;
+  onSwitch: (walletId: string) => void;
+  onManage: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => setOpen(false), [active.walletId]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  return <div className={`wallet-switcher-group ${open ? 'is-open' : ''}`} ref={root}>
+    <div className="wallet-switcher">
+      <button className="wallet-switcher-trigger" type="button" disabled={switching} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+        <span className="wallet-switcher-icon"><WalletSwitchIcon /></span>
+        <span className="wallet-switcher-current"><strong>{walletLabel(active)}</strong><small>{short(active.address, 9, 6)}</small></span>
+        {switching ? <i className="button-spinner dark" /> : <i className="wallet-switcher-chevron" aria-hidden="true">⌄</i>}
+      </button>
+      {open && <div className="wallet-switcher-options" role="listbox" aria-label="Active wallet">
+        <header><span>Switch wallet</span><small>{wallets.length} encrypted locally</small></header>
+        <div>
+          {wallets.map((item) => <button type="button" role="option" aria-selected={item.walletId === active.walletId} className={item.walletId === active.walletId ? 'selected' : ''} key={item.walletId} onClick={() => {
+            setOpen(false);
+            onSwitch(item.walletId);
+          }}>
+            <span className="wallet-option-mark">{item.walletId === active.walletId ? '✓' : <WalletSwitchIcon />}</span>
+            <span><strong>{walletLabel(item)}</strong><code>{short(item.address, 13, 9)}</code></span>
+            <small>{item.walletId === active.walletId ? 'Active' : vaultFingerprint(item)}</small>
+          </button>)}
+        </div>
+      </div>}
+    </div>
+    <button className="wallet-manage-button" aria-label="Manage wallets" onClick={() => { setOpen(false); onManage(); }}><ManageWalletsIcon /><b>Manage</b></button>
+  </div>;
 }
 
 function WalletsPanel({ wallets, activeId, switching, onSwitch, onCreate, onImport }: {
@@ -765,8 +868,9 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
   </div>;
 }
 
-function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
+function SendPanel({ vault, receiveAddressCount, fundedAddresses, onSent, onVaultUpdated }: {
   vault: EncryptedVault;
+  receiveAddressCount: number;
   fundedAddresses: WalletAddressBalance[];
   onSent: (transaction: AddressTransaction, walletAddresses: string[]) => Promise<void>;
   onVaultUpdated?: (vault: EncryptedVault) => void;
@@ -783,10 +887,13 @@ function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
   const [spendableLoading, setSpendableLoading] = useState(true);
   const [maxLoading, setMaxLoading] = useState(false);
   const [highFeeConfirmed, setHighFeeConfirmed] = useState(false);
+  // receiveAddressCount is mutable UI state stored separately from the
+  // authenticated encrypted envelope. Never clone it into `vault` before
+  // decrypting: that changes AES-GCM additional data and rejects a valid password.
   const sendCapable = (vault.addresses ?? [vault.address]).some((address) => address.startsWith('tc1q'));
-  const defaultChangeAddress = currentReceiveAddress(vault);
+  const defaultChangeAddress = currentReceiveAddress(vault, receiveAddressCount);
   const [changeAddress, setChangeAddress] = useState(FRESH_CHANGE_ADDRESS);
-  const issuedAddresses = issuedReceiveAddresses(vault);
+  const issuedAddresses = issuedReceiveAddresses(vault, receiveAddressCount);
   const ownedP2wpkhAddresses = [...new Set(vault.addresses?.filter((address) => address.startsWith('tc1q')) ?? [vault.address])];
   const walletAddresses = vault.addresses?.length ? vault.addresses : [vault.address];
   const walletAddressKey = walletAddresses.join('|');
@@ -832,7 +939,7 @@ function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
     setChangeAddress(FRESH_CHANGE_ADDRESS);
     setPlan(null);
     setHighFeeConfirmed(false);
-  }, [vault.walletId, vault.receiveAddressCount]);
+  }, [vault.walletId, receiveAddressCount]);
 
   useEffect(() => {
     let active = true;
@@ -866,7 +973,7 @@ function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
       const amountSats = parseTscAmount(amount);
       const addresses = walletAddresses;
       const selectedChangeAddress = changeAddress === FRESH_CHANGE_ADDRESS
-        ? currentReceiveAddress(vault)
+        ? currentReceiveAddress(vault, receiveAddressCount)
         : checkedWalletChangeAddress(changeAddress, addresses);
       const [coins, fees] = await Promise.all([getWalletUtxos(addresses), getFeeEstimate()]);
       if (!coins.status.synced) throw new Error('The selected gateway is not synchronized. Sending is paused for safety.');
@@ -926,7 +1033,7 @@ function SendPanel({ vault, fundedAddresses, onSent, onVaultUpdated }: {
           // The planner requires a valid wallet-owned script even when the
           // selected inputs produce no change output. Do not consume an
           // internal descriptor index in that case.
-          selectedChangeAddress = currentReceiveAddress(vault);
+          selectedChangeAddress = currentReceiveAddress(vault, receiveAddressCount);
         }
       } else {
         selectedChangeAddress = checkedWalletChangeAddress(changeAddress, addresses);
@@ -1162,7 +1269,10 @@ function PasswordField({
   minLength?: number;
 }) {
   const [visible, setVisible] = useState(false);
-  return <label>{label}<span className="password-input"><input type={visible ? 'text' : 'password'} autoComplete="new-password" data-1p-ignore="true" data-lpignore="true" data-form-type="other" value={value} onChange={(event) => onChange(event.target.value)} minLength={minLength} required /><button className="password-toggle" type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`} aria-pressed={visible}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.75"/></svg></button></span></label>;
+  const [capsLock, setCapsLock] = useState(false);
+  const hasOuterWhitespace = value.length > 0 && value.trim() !== value;
+  const updateCapsLock = (event: ReactKeyboardEvent<HTMLInputElement>) => setCapsLock(event.getModifierState('CapsLock'));
+  return <label>{label}<span className="password-input"><input type={visible ? 'text' : 'password'} autoComplete="new-password" data-1p-ignore="true" data-lpignore="true" data-form-type="other" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={updateCapsLock} onKeyUp={updateCapsLock} onBlur={() => setCapsLock(false)} minLength={minLength} required /><button className="password-toggle" type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`} aria-pressed={visible}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.75"/></svg></button></span>{(capsLock || hasOuterWhitespace) && <small className="password-entry-hint" role="status">{capsLock ? 'Caps Lock is on.' : 'Leading or trailing spaces are part of this password.'}</small>}</label>;
 }
 
 function PasswordStrength({ password }: { password: string }) {
@@ -1322,7 +1432,7 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
   } as const;
   const actionLabel = dialog === 'backup' ? 'Verify and download' : dialog === 'unlock' ? 'Unlock Wallet' : dialog === 'import' ? 'Encrypt and import' : 'Generate and encrypt wallet';
   const busyLabel = dialog === 'backup' ? 'Preparing backup…' : dialog === 'unlock' ? 'Unlocking wallet…' : dialog === 'import' ? 'Importing wallet…' : 'Creating wallet…';
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && !fileBusy && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={busy || fileBusy}>×</button><p className="eyebrow">TENSORCASH WALLET</p><h2 id="modal-title">{titles[dialog][0]}</h2><p className="modal-lead">{titles[dialog][1]}</p><form onSubmit={submit} autoComplete="off">{(dialog === 'create' || dialog === 'import') && <label>Wallet name<input value={walletName} onChange={(event) => setWalletName(event.target.value)} maxLength={40} placeholder="e.g. Personal wallet" autoComplete="off" data-1p-ignore="true" data-lpignore="true" required /></label>}{dialog === 'import' && <><input ref={fileRef} type="file" accept=".dat,.bak,.wallet,.json,application/json,application/octet-stream,application/x-sqlite3" hidden onChange={(event) => void readFile(event.target.files?.[0])} /><button className="file-drop" type="button" onClick={() => fileRef.current?.click()} disabled={fileBusy || busy} aria-busy={fileBusy}>{fileBusy ? <><span className="button-spinner dark" aria-hidden="true" /><strong>Inspecting wallet file…</strong><small>Checking encryption and address metadata locally</small></> : <><span>↑</span><strong>{sourceFile?.name ?? 'Choose Qt wallet.dat or backup file'}</strong><small>{qtEncrypted === true ? 'Encrypted Qt wallet detected · password required below' : qtEncrypted === false ? 'Unencrypted Qt wallet detected · processed only in this browser' : 'Qt/Core wallet.dat, encrypted Web backup, or ML-DSA JSON export'}</small></>}</button>{qtPrimaryAddress && <div className="qt-wallet-match"><span>Detected active address</span><strong>{qtPrimaryAddress}</strong></div>}{qtEncrypted && <PasswordField label="Existing Qt wallet password" value={qtPassword} onChange={setQtPassword} />}</>}
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && !fileBusy && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={busy || fileBusy}>×</button><p className="eyebrow">TENSORCASH WALLET</p><h2 id="modal-title">{titles[dialog][0]}</h2><p className="modal-lead">{titles[dialog][1]}</p>{vault && (dialog === 'unlock' || dialog === 'backup') && <div className="password-wallet-identity"><span>Selected wallet</span><strong>{walletLabel(vault)}</strong><code>{short(vault.address, 15, 10)} · {vaultFingerprint(vault)}</code></div>}<form onSubmit={submit} autoComplete="off">{(dialog === 'create' || dialog === 'import') && <label>Wallet name<input value={walletName} onChange={(event) => setWalletName(event.target.value)} maxLength={40} placeholder="e.g. Personal wallet" autoComplete="off" data-1p-ignore="true" data-lpignore="true" required /></label>}{dialog === 'import' && <><input ref={fileRef} type="file" accept=".dat,.bak,.wallet,.json,application/json,application/octet-stream,application/x-sqlite3" hidden onChange={(event) => void readFile(event.target.files?.[0])} /><button className="file-drop" type="button" onClick={() => fileRef.current?.click()} disabled={fileBusy || busy} aria-busy={fileBusy}>{fileBusy ? <><span className="button-spinner dark" aria-hidden="true" /><strong>Inspecting wallet file…</strong><small>Checking encryption and address metadata locally</small></> : <><span>↑</span><strong>{sourceFile?.name ?? 'Choose Qt wallet.dat or backup file'}</strong><small>{qtEncrypted === true ? 'Encrypted Qt wallet detected · password required below' : qtEncrypted === false ? 'Unencrypted Qt wallet detected · processed only in this browser' : 'Qt/Core wallet.dat, encrypted Web backup, or ML-DSA JSON export'}</small></>}</button>{qtPrimaryAddress && <div className="qt-wallet-match"><span>Detected active address</span><strong>{qtPrimaryAddress}</strong></div>}{qtEncrypted && <PasswordField label="Existing Qt wallet password" value={qtPassword} onChange={setQtPassword} />}</>}
           <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={dialog === 'create' || (dialog === 'import' && !restoringWebVault) ? 12 : 6} />
           {(dialog === 'create' || dialog === 'import') && <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} minLength={dialog === 'import' && restoringWebVault ? 6 : 12} />}
           {(dialog === 'create' || (dialog === 'import' && !restoringWebVault)) && <><PasswordStrength password={password} /><p className="password-container-warning">Use a unique password. Qt-compatible wallet.dat exports use Core's less memory-hard KDF, so a long password is essential and should never be reused.</p></>}
@@ -1378,12 +1488,13 @@ export default function App() {
   const hasAccountData = useRef(false);
   const transactionsRef = useRef<AddressTransaction[]>([]);
 
-  const displayVault = useMemo(() => {
-    if (!vault) return vault;
-    const maximum = vault.receiveAddresses?.length ?? 1;
-    const count = Math.max(1, Math.min(maximum, receiveAddressCount ?? vault.receiveAddressCount ?? 1));
-    return count === vault.receiveAddressCount ? vault : { ...vault, receiveAddressCount: count };
-  }, [receiveAddressCount, vault]);
+  // Keep the authenticated encrypted envelope immutable. The exposed receive
+  // count is convenience state and must never be merged into this object: it is
+  // part of AES-GCM additional data and changing it makes the right password fail.
+  const displayVault = vault;
+  const activeReceiveAddressCount = vault
+    ? Math.max(1, Math.min(vault.receiveAddresses?.length ?? 1, receiveAddressCount ?? vault.receiveAddressCount ?? 1))
+    : 1;
 
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequence.current;
@@ -1396,44 +1507,24 @@ export default function App() {
         return;
       }
       const addresses = displayVault.addresses?.length ? displayVault.addresses : [displayVault.address];
-      // Confirmed chain data is an indexed SQLite query and should paint the
-      // wallet immediately. Mempool decoding is intentionally a second pass so
-      // a busy public node never holds the confirmed balance hostage.
-      const account = await getWalletOverview(addresses, 1, false);
+      // The gateway serves confirmed data and its non-blocking mempool snapshot
+      // in one response. A single request avoids two identical SQLite scans and
+      // request races on every refresh.
+      const account = await getWalletOverview(addresses, 1, true);
       if (sequence === refreshSequence.current) {
-        const mergedTransactions = mergeConfirmedTransactions(account.transactions, transactionsRef.current);
+        const reconciled = reconcileLiveAccount(account.address, account.transactions, transactionsRef.current);
         setStatus(account.status);
-        setSummary((current) => mergeConfirmedSummary(account.address, current));
-        transactionsRef.current = mergedTransactions;
-        setTransactions(mergedTransactions);
+        setSummary(reconciled.summary);
+        transactionsRef.current = reconciled.transactions;
+        setTransactions(reconciled.transactions);
         setFundedAddresses(account.funded_addresses ?? []);
         hasAccountData.current = true;
-        setAccountLoading(false);
-      }
-      try {
-        const liveAccount = await getWalletOverview(addresses, 1, true);
-        if (sequence === refreshSequence.current) {
-          if (liveAccount.pending_status?.stale && liveAccount.pending_status.observed_at === null) {
-            setStatus(liveAccount.status);
-            return;
-          }
-          const reconciled = reconcileLiveAccount(liveAccount.address, liveAccount.transactions, transactionsRef.current);
-          setStatus(liveAccount.status);
-          setSummary(reconciled.summary);
-          transactionsRef.current = reconciled.transactions;
-          setTransactions(reconciled.transactions);
-          setFundedAddresses(liveAccount.funded_addresses ?? []);
-          hasAccountData.current = true;
-          void saveAccountCache(displayVault.walletId, {
-            status: liveAccount.status,
-            summary: reconciled.summary,
-            transactions: reconciled.transactions,
-            fundedAddresses: liveAccount.funded_addresses ?? [],
-          }).catch(() => { /* Public cache failure never blocks live wallet data. */ });
-        }
-      } catch {
-        // Confirmed balances remain authoritative and usable when the Core
-        // mempool is briefly busy or unavailable.
+        void saveAccountCache(displayVault.walletId, {
+          status: account.status,
+          summary: reconciled.summary,
+          transactions: reconciled.transactions,
+          fundedAddresses: account.funded_addresses ?? [],
+        }).catch(() => { /* Public cache failure never blocks live wallet data. */ });
       }
     } catch (error) {
       if (sequence === refreshSequence.current) setNetworkError(error instanceof Error ? error.message : 'Gateway unavailable');
@@ -1649,20 +1740,20 @@ export default function App() {
         <Logo />
         <div className="topbar-right">
           <StatusBadge status={status} error={networkError} />
-          {displayVault && <div className="wallet-switcher-group"><label className={`wallet-switcher ${switchingWallet ? 'busy' : ''}`}><span className="sr-only">Active wallet</span><select value={displayVault.walletId} disabled={switchingWallet} onChange={(event) => void switchWallet(event.target.value)}>{wallets.map((item) => <option value={item.walletId} key={item.walletId}>{walletLabel(item)}</option>)}</select>{switchingWallet && <i className="button-spinner dark" />}</label><button className="wallet-manage-button" aria-label="Manage wallets" onClick={() => setView('wallets')}><span>◫</span><b>Manage</b></button></div>}
-          {displayVault && <button className="compact-address" onClick={() => copy(currentReceiveAddress(displayVault))}>{short(currentReceiveAddress(displayVault))} <span>⧉</span></button>}
+          {displayVault && <WalletSwitcher wallets={wallets} active={displayVault} switching={switchingWallet} onSwitch={(walletId) => void switchWallet(walletId)} onManage={() => setView('wallets')} />}
+          {displayVault && <button className="compact-address" onClick={() => copy(currentReceiveAddress(displayVault, activeReceiveAddressCount))}>{short(currentReceiveAddress(displayVault, activeReceiveAddressCount))} <span>⧉</span></button>}
           <a className="github-link" href={SOURCE_URL} target="_blank" rel="noreferrer" aria-label="Open TensorCash Wallet on GitHub" title="GitHub"><GithubIcon /></a>
           <a className="security-link" href={VERIFY_URL} target="_blank" rel="noreferrer" aria-label="Verify the hosted wallet build" title="Verify hosted wallet"><SecurityIcon /></a>
         </div>
       </header>
       <div className={`chain-notice ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
       {storageWarning && <div className="storage-warning" role="alert"><strong>Local storage recovery notice</strong><span>{storageWarning}</span><button type="button" onClick={() => setStorageWarning('')} aria-label="Dismiss storage warning">×</button></div>}
-      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
+      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} receiveAddressCount={activeReceiveAddressCount} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
       {displayVault && view !== 'overview' && <ToolDrawer key={view} title={title} onClose={() => setView('overview')}>
-        {view === 'receive' && <ReceivePanel vault={displayVault} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
-        {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault)} />}
-        {view === 'addresses' && <AddressBalancesPanel vault={displayVault} addresses={fundedAddresses} onCopy={copy} />}
-        {view === 'send' && <SendPanel vault={displayVault} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
+        {view === 'receive' && <ReceivePanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
+        {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault, activeReceiveAddressCount)} />}
+        {view === 'addresses' && <AddressBalancesPanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} addresses={fundedAddresses} onCopy={copy} />}
+        {view === 'send' && vault && <SendPanel vault={vault} receiveAddressCount={activeReceiveAddressCount} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
           setVault(updatedVault);
           setWallets((current) => current.map((item) => item.walletId === updatedVault.walletId ? updatedVault : item));
         }} onSent={async (pendingTransaction, sentWalletAddresses) => {
@@ -1694,7 +1785,7 @@ export default function App() {
       {receiveMonitor && <ReceiveWatchModal address={receiveMonitor} onClose={closeReceiveMonitor} onCopy={copy} />}
       {sendMonitor && <SendWatchModal transaction={sendMonitor.transaction} addresses={sendMonitor.addresses} onClose={closeSendMonitor} />}
       {deleteWalletOpen && displayVault && <DeleteWalletModal wallet={displayVault} onClose={() => setDeleteWalletOpen(false)} onConfirm={deleteLocal} />}
-      {dialog && <Modal dialog={dialog} vault={vault ?? null} requestedReceiveAddressCount={displayVault?.receiveAddressCount ?? 1} onClose={() => setDialog(null)} onCreated={created} onImported={imported} onUnlocked={unlocked} onBackedUp={backedUp} />}
+      {dialog && <Modal dialog={dialog} vault={vault ?? null} requestedReceiveAddressCount={activeReceiveAddressCount} onClose={() => setDialog(null)} onCreated={created} onImported={imported} onUnlocked={unlocked} onBackedUp={backedUp} />}
       {toast && <div className="toast">✓ {toast}</div>}
       <footer><span>TensorCash Wallet · Non-custodial by design</span><span>The gateway stores no wallet data · <b className="app-version">v{APP_VERSION}</b></span></footer>
     </div>

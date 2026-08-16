@@ -123,6 +123,11 @@ export interface WalletAddressBalance {
   last_seen_height: number | null;
 }
 
+export interface TransactionCounterparty {
+  address: string;
+  value_sats: number;
+}
+
 export interface AddressTransaction {
   txid: string;
   status?: 'pending' | 'confirmed';
@@ -138,4 +143,12 @@ export interface AddressTransaction {
   transfer_sats?: number;
   fee_sats: number | null;
   is_coinbase: number;
+  /** External input owners, aggregated by address. Wallet-owned inputs are excluded. */
+  from_addresses?: TransactionCounterparty[];
+  /** External output recipients, aggregated by address. Wallet-owned change is excluded. */
+  to_addresses?: TransactionCounterparty[];
+  /** Every decoded input owner, used by the live transaction detail view. */
+  input_addresses?: TransactionCounterparty[];
+  /** Every decoded output address, used by the live transaction detail view. */
+  output_addresses?: TransactionCounterparty[];
 }

@@ -421,6 +421,8 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 "txid": txid,
                 "timestamp": item["timestamp"],
                 "fee_sats": item["fee_sats"],
+                "inputs": tuple(inputs),
+                "outputs": tuple(outputs),
             }
             per_address: dict[str, dict[str, int]] = {}
             for transaction_input in inputs:
@@ -535,6 +537,10 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
             sent = int(flow["sent_sats"])
             total_received += received
             total_sent += sent
+            input_addresses = aggregate_transaction_parties(transaction["inputs"])
+            output_addresses = aggregate_transaction_parties(transaction["outputs"])
+            from_addresses = external_transaction_parties(input_addresses, owned)
+            to_addresses = external_transaction_parties(output_addresses, owned)
             transactions.append({
                 "txid": txid,
                 "status": "pending",
@@ -548,9 +554,91 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                 "delta_sats": received - sent,
                 "fee_sats": transaction["fee_sats"],
                 "is_coinbase": 0,
+                "from_addresses": from_addresses,
+                "to_addresses": to_addresses,
+                "input_addresses": input_addresses,
+                "output_addresses": output_addresses,
             })
         transactions.sort(key=lambda item: (item["timestamp"], item["txid"]), reverse=True)
         return transactions, total_received, total_sent, pending_status
+
+    def aggregate_transaction_parties(entries: Any) -> list[dict[str, Any]]:
+        amounts: dict[str, int] = {}
+        for entry in entries or ():
+            address = entry.get("address") if isinstance(entry, dict) else None
+            if not isinstance(address, str) or not address:
+                continue
+            value = entry.get("value_sats", 0)
+            if not isinstance(value, int) or value < 0:
+                continue
+            amounts[address] = amounts.get(address, 0) + value
+        return [
+            {"address": address, "value_sats": value}
+            for address, value in sorted(amounts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    def external_transaction_parties(
+        entries: Any,
+        owned_addresses: set[str],
+    ) -> list[dict[str, Any]]:
+        """Return only non-wallet addresses for a transaction direction."""
+        owned = {address.lower() for address in owned_addresses}
+        return [
+            party for party in aggregate_transaction_parties(entries)
+            if party["address"].lower() not in owned
+        ]
+
+    def enrich_confirmed_wallet_transactions(
+        connection: sqlite3.Connection,
+        rows: list[dict[str, Any]],
+        addresses: list[str],
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        txids = [str(row["txid"]) for row in rows]
+        placeholders = ",".join("?" for _ in txids)
+        inputs_by_txid: dict[str, list[dict[str, Any]]] = {}
+        outputs_by_txid: dict[str, list[dict[str, Any]]] = {}
+        for row in connection.execute(
+            f"""
+            SELECT txid, address, SUM(COALESCE(value_sats, 0)) AS value_sats
+            FROM tx_inputs
+            WHERE txid IN ({placeholders}) AND address IS NOT NULL
+            GROUP BY txid, address
+            """,
+            txids,
+        ).fetchall():
+            inputs_by_txid.setdefault(str(row["txid"]), []).append({
+                "address": str(row["address"]),
+                "value_sats": int(row["value_sats"]),
+            })
+        for row in connection.execute(
+            f"""
+            SELECT txid, address, SUM(value_sats) AS value_sats
+            FROM tx_outputs
+            WHERE txid IN ({placeholders}) AND address IS NOT NULL
+            GROUP BY txid, address
+            """,
+            txids,
+        ).fetchall():
+            outputs_by_txid.setdefault(str(row["txid"]), []).append({
+                "address": str(row["address"]),
+                "value_sats": int(row["value_sats"]),
+            })
+        owned = set(addresses)
+        enriched = []
+        for row in rows:
+            txid = str(row["txid"])
+            input_addresses = aggregate_transaction_parties(inputs_by_txid.get(txid))
+            output_addresses = aggregate_transaction_parties(outputs_by_txid.get(txid))
+            enriched.append({
+                **row,
+                "from_addresses": external_transaction_parties(input_addresses, owned),
+                "to_addresses": external_transaction_parties(output_addresses, owned),
+                "input_addresses": input_addresses,
+                "output_addresses": output_addresses,
+            })
+        return enriched
 
     @app.after_request
     def response_headers(response):
@@ -778,6 +866,9 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     """,
                     (*addresses, page_size, confirmed_offset),
                 ).fetchall()]
+                confirmed_rows = enrich_confirmed_wallet_transactions(
+                    connection, confirmed_rows, addresses
+                )
                 confirmed_payload = {
                     "summary": summary,
                     "funded_addresses": funded_rows,
@@ -826,6 +917,7 @@ def create_app(settings: Settings | None = None, rpc: RPCClient | None = None) -
                     """,
                     (*addresses, confirmed_limit, confirmed_offset),
                 ).fetchall()]
+                rows = enrich_confirmed_wallet_transactions(connection, rows, addresses)
             else:
                 rows = rows[:confirmed_limit]
             payload = dict(summary)

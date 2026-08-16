@@ -14,6 +14,7 @@ from server.rpc import RPCError
 
 ADDRESS = "tc1qg83etpvnwl8jqrexs3zsnpvpcvepwg2xduejel"
 ADDRESS_2 = "tc1q9wpysjvsjcz0t945h6cr9n6sfkh9c5w7c9008d"
+EXTERNAL_ADDRESS = "tc1qsrqp2fmxnzchyufql24uu4ckydx3h8zftaxyms"
 TXID = "11" * 32
 TXID_2 = "44" * 32
 BLOCK_HASH = "22" * 32
@@ -85,6 +86,10 @@ def wallet_app(tmp_path: Path):
               address TEXT, txid TEXT, block_height INTEGER, timestamp INTEGER,
               received_sats INTEGER, sent_sats INTEGER, delta_sats INTEGER
             );
+            CREATE TABLE tx_inputs(
+              txid TEXT, vin_index INTEGER, prev_txid TEXT, prev_vout INTEGER,
+              address TEXT, value_sats INTEGER, sequence INTEGER, coinbase_data TEXT
+            );
             CREATE TABLE tx_outputs(
               txid TEXT, vout_index INTEGER, address TEXT, value_sats INTEGER,
               script_hex TEXT, spent_by_txid TEXT
@@ -119,6 +124,22 @@ def wallet_app(tmp_path: Path):
         connection.execute(
             "INSERT INTO tx_outputs VALUES(?, 0, ?, ?, ?, NULL)",
             (TXID, ADDRESS, 125_000_000, SCRIPT),
+        )
+        connection.execute(
+            "INSERT INTO tx_inputs VALUES(?, 0, ?, 0, ?, ?, 4294967293, NULL)",
+            (TXID, "33" * 32, EXTERNAL_ADDRESS, 125_001_000),
+        )
+        connection.execute(
+            "INSERT INTO tx_inputs VALUES(?, 0, ?, 0, ?, ?, 4294967293, NULL)",
+            (TXID_2, "34" * 32, ADDRESS_2, 25_001_000),
+        )
+        connection.execute(
+            "INSERT INTO tx_outputs VALUES(?, 0, ?, ?, ?, NULL)",
+            (TXID_2, EXTERNAL_ADDRESS, 25_000_000, SCRIPT),
+        )
+        connection.execute(
+            "INSERT INTO tx_outputs VALUES(?, 0, ?, ?, ?, NULL)",
+            ("66" * 32, EXTERNAL_ADDRESS, 50_001_000, SCRIPT),
         )
     rpc = FakeRPC()
     settings = Settings(
@@ -168,6 +189,16 @@ def test_wallet_overview_aggregates_all_derived_addresses_without_custody(wallet
     assert payload["address"]["unconfirmed_balance_sats"] == 0
     assert payload["address"]["tx_count"] == 2
     assert [row["txid"] for row in payload["transactions"]] == [TXID, TXID_2]
+    assert payload["transactions"][0]["from_addresses"] == [{
+        "address": EXTERNAL_ADDRESS,
+        "value_sats": 125_001_000,
+    }]
+    assert payload["transactions"][0]["to_addresses"] == []
+    assert payload["transactions"][1]["from_addresses"] == []
+    assert payload["transactions"][1]["to_addresses"] == [{
+        "address": EXTERNAL_ADDRESS,
+        "value_sats": 25_000_000,
+    }]
     assert [(row["address"], row["balance_sats"]) for row in payload["funded_addresses"]] == [
         (ADDRESS, 125_000_000),
         (ADDRESS_2, 75_000_000),
@@ -199,6 +230,11 @@ def test_wallet_overview_includes_unconfirmed_balance_and_pending_history(wallet
     assert payload["transactions"][0]["txid"] == pending_txid
     assert payload["transactions"][0]["status"] == "pending"
     assert payload["transactions"][0]["confirmations"] == 0
+    assert payload["transactions"][0]["from_addresses"] == [{
+        "address": EXTERNAL_ADDRESS,
+        "value_sats": 50_001_000,
+    }]
+    assert payload["transactions"][0]["to_addresses"] == []
 
 
 def test_pending_lookup_uses_address_index_not_full_mempool_scan(wallet_app):
