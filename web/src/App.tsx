@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import packageMetadata from '../package.json';
 import { importOfficialWalletExport } from './lib/mldsa';
 import {
@@ -103,6 +103,16 @@ function short(value: string, start = 11, end = 9): string {
 
 function walletLabel(vault: EncryptedVault): string {
   return vault.walletName?.trim() || short(vault.address, 10, 7);
+}
+
+function localWalletAddressOwner(candidate: string, wallets: EncryptedVault[]) {
+  const normalized = candidate.trim().toLowerCase();
+  if (!normalized) return null;
+  for (const wallet of wallets) {
+    const addresses = new Set([wallet.address, ...(wallet.addresses ?? []), ...(wallet.receiveAddresses ?? [])].map((address) => address.toLowerCase()));
+    if (addresses.has(normalized)) return { wallet, address: normalized };
+  }
+  return null;
 }
 
 function relativeTime(timestamp: number): string {
@@ -665,6 +675,7 @@ function TransactionTable({ transactions, address, loading = false }: { transact
   if (!transactions.length) {
     return <div className="empty-state"><span>◇</span><strong>No wallet transactions</strong><p>Confirmed and unconfirmed activity for {short(address)} will appear here.</p></div>;
   }
+  const pendingAnimationDelay = `${-(Date.now() % 3000)}ms`;
   return (
     <div className="transaction-list">
       {transactions.map((transaction) => {
@@ -675,8 +686,10 @@ function TransactionTable({ transactions, address, loading = false }: { transact
         const counterparty = counterparties[0];
         const counterpartyLabel = transaction.is_coinbase ? 'Source' : received ? 'From' : 'To';
         return (
-          <div className={`transaction-row ${pending ? 'pending' : ''}`} key={transaction.txid}>
-            <span className={`tx-icon ${received ? 'received' : 'sent'}`}><span>{received ? '↓' : '↑'}</span>{pending && <i />}</span>
+          <div className={`transaction-row ${pending ? 'pending' : ''}`} key={transaction.txid} style={pending ? { '--tx-pending-delay': pendingAnimationDelay } as CSSProperties : undefined}>
+            <span className={`tx-icon ${received ? 'received' : 'sent'}`} aria-hidden="true">
+              {received ? <ReceiveToolIcon /> : <SendToolIcon />}
+            </span>
             <div className="tx-main">
               <div className="tx-title"><strong>{received ? (transaction.is_coinbase ? 'Block reward' : 'Received') : 'Sent'}</strong>{pending && <span className="tx-pending-badge"><i /> Pending</span>}</div>
               <div className="tx-counterparty"><small>{counterpartyLabel}</small>{transaction.is_coinbase
@@ -686,7 +699,7 @@ function TransactionTable({ transactions, address, loading = false }: { transact
                   : <span>{received ? 'Sender address unavailable' : 'Recipient address unavailable'}</span>}</div>
               <a className="tx-id" href={explorerTransactionUrl(transaction.txid)} target="_blank" rel="noreferrer" title={`View ${transaction.txid} on TSC Scan`}>{short(transaction.txid, 12, 10)} <span aria-hidden="true">↗</span></a>
             </div>
-            <div className="tx-block"><small>{pending ? 'Status' : 'Block'}</small><span>{pending ? 'Unconfirmed' : transaction.block_height?.toLocaleString()}</span></div>
+            <div className={`tx-block ${pending ? 'is-pending' : ''}`}><small>{pending ? 'Status' : 'Block'}</small><span>{pending && <i />}{pending ? 'Unconfirmed' : transaction.block_height?.toLocaleString()}</span></div>
             <div className={`tx-value ${received ? 'received' : 'sent'}`}><strong>{received ? '+' : '−'}{formatTsc(Math.abs(displayDelta))} TSC</strong><small>{relativeTime(transaction.timestamp)}</small></div>
           </div>
         );
@@ -868,8 +881,9 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
   </div>;
 }
 
-function SendPanel({ vault, receiveAddressCount, fundedAddresses, onSent, onVaultUpdated }: {
+function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSent, onVaultUpdated }: {
   vault: EncryptedVault;
+  wallets: EncryptedVault[];
   receiveAddressCount: number;
   fundedAddresses: WalletAddressBalance[];
   onSent: (transaction: AddressTransaction, walletAddresses: string[]) => Promise<void>;
@@ -887,6 +901,7 @@ function SendPanel({ vault, receiveAddressCount, fundedAddresses, onSent, onVaul
   const [spendableLoading, setSpendableLoading] = useState(true);
   const [maxLoading, setMaxLoading] = useState(false);
   const [highFeeConfirmed, setHighFeeConfirmed] = useState(false);
+  const localRecipient = useMemo(() => localWalletAddressOwner(recipient, wallets), [recipient, wallets]);
   // receiveAddressCount is mutable UI state stored separately from the
   // authenticated encrypted envelope. Never clone it into `vault` before
   // decrypting: that changes AES-GCM additional data and rejects a valid password.
@@ -898,6 +913,7 @@ function SendPanel({ vault, receiveAddressCount, fundedAddresses, onSent, onVaul
   const walletAddresses = vault.addresses?.length ? vault.addresses : [vault.address];
   const walletAddressKey = walletAddresses.join('|');
   const fundedByAddress = new Map(fundedAddresses.map((item) => [item.address, item.balance_sats]));
+  const confirmedWalletBalanceSats = fundedAddresses.reduce((sum, item) => sum + item.balance_sats, 0);
   const changeOptions = [FRESH_CHANGE_ADDRESS, defaultChangeAddress, ...fundedAddresses.map((item) => item.address), ...issuedAddresses, ...ownedP2wpkhAddresses]
     .filter((address, index, items) => address.startsWith('tc1q') && items.indexOf(address) === index);
   const changeAddressOptions: ChangeAddressOption[] = [{
@@ -1112,11 +1128,12 @@ function SendPanel({ vault, receiveAddressCount, fundedAddresses, onSent, onVaul
       <div className="content-card send-card">
         {plan && <div className="send-review-heading"><p className="eyebrow">FINAL CHECK</p><h2>Review and sign</h2></div>}
         {!plan ? <form className="send-compose-form" onSubmit={review} autoComplete="off">
-          <div className="send-field"><span className="send-field-label">Recipient address</span><input value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="tc1q…" autoComplete="off" data-1p-ignore="true" data-lpignore="true" spellCheck={false} disabled={Boolean(busy)} /></div>
+          <div className="send-field"><span className="send-field-label">Recipient address</span><input value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="tc1q…" autoComplete="off" data-1p-ignore="true" data-lpignore="true" spellCheck={false} disabled={Boolean(busy)} />{localRecipient && <div className="local-wallet-recipient" role="status"><span aria-hidden="true"><ManageWalletsIcon /></span><p><small>Local wallet address</small><strong>{walletLabel(localRecipient.wallet)} <code>({short(localRecipient.address, 8, 7)})</code></strong><em>This recipient belongs to a wallet stored on this device.</em></p></div>}</div>
           <div className="send-field amount-field">
             <div className="send-field-heading"><span className="send-field-label">Amount</span><small>{spendableLoading ? 'Loading spendable balance…' : `${formatTsc(spendable?.balanceSats)} TSC available`}</small></div>
             <div className="amount-input"><input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="0.00" autoComplete="off" data-1p-ignore="true" data-lpignore="true" disabled={Boolean(busy)} /><button type="button" onClick={() => void useMaximumAmount()} disabled={Boolean(busy) || maxLoading || spendableLoading}>{maxLoading ? <span className="button-spinner dark" aria-hidden="true" /> : 'MAX'}</button><span>TSC</span></div>
             {spendable?.maximum && <small className="max-fee-note">MAX reserves an estimated {formatTsc(spendable.maximum.feeSats)} TSC network fee across {spendable.maximum.inputCount} UTXO{spendable.maximum.inputCount === 1 ? '' : 's'}.</small>}
+            {spendable && Math.max(0, confirmedWalletBalanceSats - spendable.balanceSats - spendable.unsupportedValueSats) > 0 && <div className="pending-utxo-note"><span aria-hidden="true">◷</span><p><strong>{formatTsc(Math.max(0, confirmedWalletBalanceSats - spendable.balanceSats - spendable.unsupportedValueSats))} TSC is temporarily unavailable.</strong> A pending transaction has already committed its complete input UTXO. Any wallet change can be spent after that transaction confirms.</p></div>}
             {Boolean(spendable?.unsupportedValueSats) && <small className="unsupported-funds-note">{formatTsc(spendable?.unsupportedValueSats)} TSC is held in Taproot/post-quantum outputs that this wallet version cannot sign and is excluded from spendable funds.</small>}
           </div>
           <div className="send-field"><span className="send-field-label">Change address</span><ChangeAddressPicker value={changeAddress} options={changeAddressOptions} disabled={Boolean(busy)} onChange={(address) => { setChangeAddress(address); setPlan(null); }} /><small className="field-help">Only addresses controlled by this wallet are shown.</small></div>
@@ -1753,7 +1770,7 @@ export default function App() {
         {view === 'receive' && <ReceivePanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
         {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault, activeReceiveAddressCount)} />}
         {view === 'addresses' && <AddressBalancesPanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} addresses={fundedAddresses} onCopy={copy} />}
-        {view === 'send' && vault && <SendPanel vault={vault} receiveAddressCount={activeReceiveAddressCount} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
+        {view === 'send' && vault && <SendPanel vault={vault} wallets={wallets} receiveAddressCount={activeReceiveAddressCount} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
           setVault(updatedVault);
           setWallets((current) => current.map((item) => item.walletId === updatedVault.walletId ? updatedVault : item));
         }} onSent={async (pendingTransaction, sentWalletAddresses) => {
