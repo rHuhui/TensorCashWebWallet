@@ -1,6 +1,6 @@
 # TensorCash Web Wallet
 
-TensorCash Web Wallet v1.0.6 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
+TensorCash Web Wallet v1.0.7 is a non-custodial, browser-first wallet for TensorCash. It creates password-encrypted, descriptor-based TensorCash Core/Qt `wallet.dat` wallets and can import supported Qt backups without uploading the file. End users do not need to run a full node; keys and transaction signing stay in their browser.
 
 Source repository: [github.com/rHuhui/TensorCashWebWallet](https://github.com/rHuhui/TensorCashWebWallet)
 
@@ -194,7 +194,7 @@ This project uses [Semantic Versioning](https://semver.org/):
 - `PATCH` contains backward-compatible fixes and security hardening.
 - Git tags and GitHub releases use a `v` prefix, for example `v1.0.0`; package files use `1.0.0`.
 
-The current patch release is **v1.0.6**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
+The current patch release is **v1.0.7**. Keep root `package.json`, `web/package.json`, `package-lock.json`, the release tag, and release notes aligned. Document any required Core version, gateway API change, backup migration, or operator action.
 
 ### Hosted build verification
 

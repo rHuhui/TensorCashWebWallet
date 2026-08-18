@@ -24,8 +24,20 @@ export default defineConfig(({ mode }) => {
   const configured = String(env.VITE_ALLOWED_GATEWAY_ORIGINS || '')
     .split(',').map((value) => value.trim()).filter(Boolean).map(exactOrigin);
   const defaultGateway = env.VITE_WALLET_GATEWAY_URL || 'https://app.tscweb.xyz/wallet';
-  const connectOrigins = [exactOrigin(defaultGateway), ...configured];
-  if (mode !== 'production') connectOrigins.push('http://127.0.0.1:9920');
+  const marketService = env.VITE_MARKET_DATA_URL
+    || (mode === 'production' ? 'https://app.tscweb.xyz/market/v1' : 'http://127.0.0.1:9930/market/v1');
+  const safeTrade = env.VITE_SAFETRADE_TICKER_URL
+    || 'https://safe.trade/api/v2/trade/public/tickers/tscusdt';
+  const currencyRates = env.VITE_CURRENCY_RATES_URL
+    || 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json';
+  const connectOrigins = [
+    exactOrigin(defaultGateway),
+    exactOrigin(marketService),
+    exactOrigin(safeTrade),
+    exactOrigin(currencyRates),
+    ...configured,
+  ];
+  if (mode !== 'production') connectOrigins.push('http://127.0.0.1:9920', 'http://127.0.0.1:9930');
   return {
     base: '/wallet/',
     plugins: [react(), cspPlugin(connectOrigins)],

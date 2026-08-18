@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.7 - 2026-08-18
+
+- Add a live TSC/USDT reference price from SafeTrade with an independent,
+  server-cached fallback and a visible stale-price warning.
+- Cache the last valid market quote for ten minutes so a temporary upstream
+  failure does not immediately remove wallet valuation data.
+- Add daily-cached USD exchange rates and a searchable local display-currency
+  preference without changing the wallet's native TSC accounting.
+- Make estimated wallet value the primary overview metric while retaining the
+  exact TSC balance and unit price immediately alongside it.
+- Add stable loading feedback and refine value, balance, and quote alignment
+  across desktop and mobile layouts.
+
+No wallet migration, password change, backup-format change, gateway API change,
+or Core upgrade is required for this release.
+
 ## 1.0.5 - 2026-08-16
 
 - Preserve the authenticated encrypted-wallet envelope when receive-address UI

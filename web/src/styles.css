@@ -192,13 +192,27 @@ a { color: inherit; }
 .balance-hero::after { content: "T"; position: absolute; right: 36px; top: -55px; font: 260px/1 Georgia, serif; color: rgba(255,255,255,.035); }
 .balance-hero.is-loading::before { content: ""; position: absolute; z-index: 3; inset: 0; pointer-events: none; background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.08) 43%, rgba(255,255,255,.18) 50%, rgba(255,255,255,.08) 57%, transparent 75%); transform: translateX(-100%); animation: balance-shimmer 1.35s ease-in-out infinite; }
 @keyframes balance-shimmer { to { transform: translateX(100%); } }
-.balance-value-line { position: relative; z-index: 1; display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 17px; }
+.balance-primary { position: relative; z-index: 1; max-width: min(900px, calc(100% - 250px)); }
+.balance-hero.has-pending .balance-primary { max-width: min(720px, calc(100% - 380px)); }
+.balance-value-line { position: relative; z-index: 1; display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 9px; margin: 0 0 6px; }
 .balance-hero h1 { font-size: clamp(44px, 5vw, 67px); letter-spacing: -3px; margin: 0; position: relative; z-index: 1; }
-.balance-hero h1 small { font-size: 17px; letter-spacing: 0; color: #d8c4c8; }
-.balance-value-line > em { display: inline-flex; align-items: center; align-self: baseline; padding: 5px 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(14,3,7,.17); color: #d8c4c8; font: 650 9px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; white-space: nowrap; }
-.balance-value-line > em.incoming { color: #8de8c2; border-color: rgba(111,225,180,.25); background: rgba(15,91,64,.2); }
-.balance-value-line > em.outgoing { color: #f2c68d; border-color: rgba(239,182,110,.26); background: rgba(101,58,15,.2); }
-.balance-value-line > em.mixed { color: #f0dca8; border-color: rgba(210,198,140,.3); background: rgba(60,74,42,.24); }
+.balance-hero h1 small { margin-left: 9px; font-size: 15px; letter-spacing: .4px; color: #d8c4c8; }
+.balance-hero h1.market-value-pending { min-width: 70px; min-height: 80px; display: inline-flex; align-items: center; }
+.market-value-spinner { width: 30px; height: 30px; display: block; border: 3px solid rgba(255,255,255,.2); border-top-color: #fff; border-right-color: rgba(255,255,255,.72); border-radius: 50%; box-shadow: 0 0 20px rgba(255,255,255,.1); animation: market-value-spin .78s linear infinite; }
+@keyframes market-value-spin { to { transform: rotate(360deg); } }
+.asset-balance-line { position: relative; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 9px 12px; min-height: 28px; margin-bottom: 11px; }
+.asset-balance-amount { display: inline-flex; align-items: baseline; gap: 7px; color: #f7eff1; }
+.asset-balance-amount strong { font: 720 23px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.55px; }
+.asset-balance-amount small { color: #d1bfc4; font-size: 11px; font-weight: 800; letter-spacing: 1px; }
+.asset-balance-line > em { display: inline-flex; align-items: center; padding: 5px 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(14,3,7,.17); color: #d8c4c8; font: 650 9px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal; letter-spacing: 0; white-space: nowrap; }
+.asset-balance-line > em.incoming { color: #8de8c2; border-color: rgba(111,225,180,.25); background: rgba(15,91,64,.2); }
+.asset-balance-line > em.outgoing { color: #f2c68d; border-color: rgba(239,182,110,.26); background: rgba(101,58,15,.2); }
+.asset-balance-line > em.mixed { color: #f0dca8; border-color: rgba(210,198,140,.3); background: rgba(60,74,42,.24); }
+.market-valuation { position: relative; z-index: 2; width: fit-content; max-width: 100%; display: flex; align-items: center; align-self: baseline; gap: 11px; margin: 0; padding: 7px 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(18,4,9,.13); color: #f5edef; backdrop-filter: blur(10px); }
+.market-valuation-rate small { display: inline; }
+.market-valuation-rate small { color: #e4d6d9; font-size: 9.5px; font-weight: 680; }
+.market-valuation > b { padding: 4px 7px; border: 1px solid rgba(247,194,101,.28); border-radius: 999px; background: rgba(167,101,15,.22); color: #ffd99a; font-size: 8px; white-space: nowrap; }
+.market-valuation.is-stale { border-color: rgba(247,194,101,.25); }
 .balance-scan-link { width: 30px; height: 30px; display: inline-grid; place-items: center; align-self: center; margin-left: 2px; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; background: rgba(255,255,255,.08); color: #fff; font-size: 13px; text-decoration: none; transition: transform .2s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease; }
 .balance-scan-link:hover { transform: translateY(-2px); border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.16); box-shadow: 0 8px 22px rgba(24,4,9,.17); }
 .address-pill { display: inline-flex; align-items: center; gap: 12px; color: #ddcdd0; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; position: relative; z-index: 1; }
@@ -635,6 +649,28 @@ input:focus, textarea:focus { border-color: var(--wine); box-shadow: 0 0 0 3px r
 .form-message { color: var(--green); font-size: 11px; }
 .gateway-boundary { margin-top: 35px; padding: 25px; background: #f6f4f1; border: 1px solid var(--line); display: flex; justify-content: center; align-items: center; gap: 15px; font-size: 10px; }
 .gateway-boundary span { padding: 10px 13px; background: white; border: 1px solid #d8d4d1; font-weight: 800; }.gateway-boundary i { color: #8c888d; font-style: normal; }
+.currency-settings { overflow: visible; }
+.currency-picker { position: relative; margin-top: 17px; }
+.currency-picker-trigger { width: 100%; min-height: 58px; display: grid; grid-template-columns: 52px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 9px 13px; border: 1px solid #d9d4d1; border-radius: 7px; background: #fff; color: #3b373a; cursor: pointer; text-align: left; transition: border-color .2s ease, box-shadow .2s ease, background .2s ease; }
+.currency-picker-trigger:hover, .currency-picker.is-open .currency-picker-trigger { border-color: #b8959d; background: #fdfafb; box-shadow: 0 9px 25px rgba(61,25,34,.09); }
+.currency-picker-trigger > span { height: 36px; display: grid; place-items: center; border-radius: 6px; background: var(--wine-pale); color: var(--wine); font: 850 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .7px; }
+.currency-picker-trigger > small { color: #514b4f; font-size: 11px; font-weight: 750; }
+.currency-picker-trigger > i { color: #8b8489; font-size: 15px; font-style: normal; transition: transform .2s ease; }
+.currency-picker.is-open .currency-picker-trigger > i { transform: rotate(180deg); }
+.currency-picker-menu { position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; right: 0; overflow: hidden; border: 1px solid #d8d1ce; border-radius: 9px; background: #fff; box-shadow: 0 24px 55px rgba(42,20,27,.18); animation: wallet-menu-in .22s cubic-bezier(.2,.75,.25,1) both; }
+.currency-picker-menu > label { display: block; padding: 12px; border-bottom: 1px solid #ece8e5; background: #faf8f6; }
+.currency-picker-menu > label span { display: block; margin-bottom: 6px; color: #817a7f; font-size: 8px; font-weight: 780; letter-spacing: .8px; text-transform: uppercase; }
+.currency-picker-menu input { width: 100%; height: 38px; border: 1px solid #d9d4d1; border-radius: 5px; padding: 0 10px; background: #fff; color: #332f32; outline: none; font-size: 11px; }
+.currency-picker-menu input:focus { border-color: #9d6674; box-shadow: 0 0 0 3px rgba(117,31,50,.08); }
+.currency-picker-menu > div { max-height: 276px; overflow-y: auto; padding: 5px; }
+.currency-picker-menu > div > button { width: 100%; min-height: 50px; display: grid; grid-template-columns: 58px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: #393438; cursor: pointer; text-align: left; }
+.currency-picker-menu > div > button:hover, .currency-picker-menu > div > button.selected { background: #f8f2f4; }
+.currency-picker-menu button strong { font: 800 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.currency-picker-menu button small { overflow: hidden; color: #878086; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.currency-picker-menu button span { color: var(--wine); font-size: 10px; }
+.currency-picker-menu > div > p { margin: 0; padding: 18px; color: #8b8589; font-size: 10px; text-align: center; }
+.currency-source { display: flex; justify-content: space-between; gap: 10px; margin-top: 10px; color: #8c858a; font-size: 9px; }
+.currency-source b { color: #a16a18; }
 .wallet-list { display: grid; margin: 0 -30px; }
 .wallet-list button { width: 100%; min-height: 78px; display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 14px; padding: 15px 30px; border: 0; border-bottom: 1px solid #ece9e6; background: #fff; text-align: left; cursor: pointer; transition: background .2s ease; }
 .wallet-list button:hover { background: #faf8f6; }
@@ -759,7 +795,7 @@ footer { margin-top: auto; padding: 18px clamp(24px, 4vw, 72px); border-top: 1px
   .delete-wallet-actions { padding: 17px 21px 21px; }
   .tool-drawer .content-card { padding: 22px 18px; }
   .tool-drawer .transaction-list { margin: 0 -18px -22px; }
-  .wallet-content { padding: 20px 14px 48px; }.balance-hero { padding: 28px 22px 0; }.balance-actions { position: static; margin-top: 25px; }.pending-activity { position: relative; top: auto; right: auto; width: 100%; margin-top: 18px; }.pending-ambient { top: -55px; right: -50px; }.balance-grid { grid-template-columns: repeat(2,1fr); margin: 25px -22px 0; }.balance-grid > span { border-bottom: 1px solid rgba(255,255,255,.12); }.balance-hero h1 { font-size: 42px; letter-spacing: -2px; }.balance-hero h1 small { font-size: 13px; }
+  .wallet-content { padding: 20px 14px 48px; }.balance-hero { padding: 28px 22px 0; }.balance-primary, .balance-hero.has-pending .balance-primary { max-width: 100%; }.balance-actions { position: static; margin-top: 25px; }.market-valuation { max-width: 100%; flex-wrap: wrap; border-radius: 8px; }.pending-activity { position: relative; top: auto; right: auto; width: 100%; margin-top: 18px; }.pending-ambient { top: -55px; right: -50px; }.balance-grid { grid-template-columns: repeat(2,1fr); margin: 25px -22px 0; }.balance-grid > span { border-bottom: 1px solid rgba(255,255,255,.12); }.balance-hero h1 { font-size: 42px; letter-spacing: -2px; }.balance-hero h1 small { font-size: 13px; }.balance-hero h1.market-value-pending { min-height: 58px; }.market-value-spinner { width: 26px; height: 26px; }.asset-balance-amount strong { font-size: 20px; }
   .tools-bar-heading { align-items: flex-start; flex-direction: column; gap: 5px; padding: 16px 18px; }.tools-bar-grid button { min-height: 78px; padding: 12px 13px; }.tools-bar-grid small { white-space: normal; }
   .content-card { padding: 22px 18px; }.transaction-list { margin: 0 -18px -22px; }.transaction-skeleton { margin: 0 -18px -22px; }.transaction-row { grid-template-columns: auto 1fr auto; padding: 16px 18px; }.tx-block { display: none; }.tx-value strong { font-size: 11px; }
   .settings-card form { grid-template-columns: 1fr; }.gateway-boundary { overflow-x: auto; justify-content: start; }.modal { padding: 30px 22px; }.receive-primary { min-height: 0; padding: 20px; }.receive-intro { grid-template-columns: 52px minmax(0,1fr); gap: 13px; }.receive-orb { width: 50px; height: 50px; margin: 0; }.receive-orb span { font-size: 25px; }.receive-actions { grid-template-columns: 1fr; }.derive-button { min-width: 0; grid-column: auto; }.receive-address-list, .wallet-list { margin: 15px 0 0; }.wallet-list { margin-left: -18px; margin-right: -18px; }.receive-address-list > div, .wallet-list button { padding: 12px; }.wallet-list button { padding-left: 18px; padding-right: 18px; }.receive-address-list > div { grid-template-columns: 32px minmax(0,1fr) auto; }.receive-address-state { display: none; }.receive-address-list code { font-size: 9.5px; }.wallet-add-actions { flex-direction: column; }

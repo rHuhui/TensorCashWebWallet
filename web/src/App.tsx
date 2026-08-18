@@ -39,6 +39,16 @@ import {
 } from './lib/gateway';
 import { base64ToBytes } from './lib/bytes';
 import {
+  convertedTscPrice,
+  formatCurrency,
+  getDisplayCurrency,
+  loadCurrencyRates,
+  loadTscTicker,
+  setDisplayCurrency as saveDisplayCurrency,
+  type CurrencySnapshot,
+  type MarketSnapshot,
+} from './lib/market';
+import {
   addPendingToSummary,
   createLocalPendingTransaction,
   prependLocalPending,
@@ -328,7 +338,7 @@ function TransactionFilters({ transactions, filter, onChange, compact = false }:
   );
 }
 
-function Overview({ vault, receiveAddressCount, summary, status, transactions, fundedAddresses, loading, showBackup, onCopy, onBackup, onReceive, onView }: {
+function Overview({ vault, receiveAddressCount, summary, status, transactions, fundedAddresses, loading, showBackup, market, currencies, displayCurrency, onCopy, onBackup, onReceive, onView }: {
   vault: EncryptedVault;
   receiveAddressCount: number;
   summary: AddressSummary | null;
@@ -337,6 +347,9 @@ function Overview({ vault, receiveAddressCount, summary, status, transactions, f
   fundedAddresses: WalletAddressBalance[];
   loading: boolean;
   showBackup: boolean;
+  market: MarketSnapshot | null;
+  currencies: CurrencySnapshot | null;
+  displayCurrency: string;
   onCopy: (value: string) => void;
   onBackup: () => void;
   onReceive: () => void;
@@ -351,6 +364,10 @@ function Overview({ vault, receiveAddressCount, summary, status, transactions, f
   const pendingMode = pendingDisplaySats > 0 ? 'incoming' : pendingDisplaySats < 0 ? 'outgoing' : '';
   const hasPending = Boolean(pendingMode);
   const totalBalance = summary ? summary.balance_sats + unconfirmed : null;
+  const unitPrice = convertedTscPrice(market, currencies, displayCurrency);
+  const convertedBalance = totalBalance !== null && unitPrice !== null
+    ? totalBalance / TSC * unitPrice
+    : null;
   const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>('all');
   const recentTransactions = filterTransactions(transactions, transactionFilter).slice(0, 6);
   useEffect(() => setTransactionFilter('all'), [vault.walletId]);
@@ -358,10 +375,26 @@ function Overview({ vault, receiveAddressCount, summary, status, transactions, f
     <div className="panel-stack enter">
       <section className={`balance-hero ${loading ? 'is-loading' : ''} ${hasPending ? `has-pending pending-${pendingMode}` : ''}`} aria-busy={loading}>
         {hasPending && <div className="pending-ambient" aria-hidden="true"><i /><i /><i /></div>}
-        <div>
-          <p className="eyebrow light">TOTAL BALANCE</p>
+        <div className="balance-primary">
+          <p className="eyebrow light">ESTIMATED WALLET VALUE</p>
           <div className="balance-value-line">
-            <h1>{totalBalance === null ? '—' : formatTsc(totalBalance)} <small>TSC</small></h1>
+            <h1 className={convertedBalance === null ? 'market-value-pending' : ''}>
+              {convertedBalance === null
+                ? <><span className="market-value-spinner" aria-hidden="true" /><span className="sr-only">Loading estimated wallet value</span></>
+                : formatCurrency(convertedBalance, displayCurrency)}
+            </h1>
+            <div className={`market-valuation${market?.stale || currencies?.stale ? ' is-stale' : ''}`} role="status">
+              <span className="market-valuation-rate">
+                <small>{unitPrice === null ? 'Waiting for market data' : `1 TSC = ${formatCurrency(unitPrice, displayCurrency)}`}</small>
+              </span>
+              {(market?.stale || currencies?.stale) && <b>Price update delayed</b>}
+            </div>
+          </div>
+          <div className="asset-balance-line">
+            <span className="asset-balance-amount">
+              <strong>{totalBalance === null ? '—' : formatTsc(totalBalance)}</strong>
+              <small>TSC</small>
+            </span>
             {hasPending && <em className={pendingMode}>
               {pendingDisplaySats > 0 ? '+' : '−'}{formatTsc(Math.abs(pendingDisplaySats))} TSC unconfirmed
             </em>}
@@ -1177,7 +1210,61 @@ function RecoveryPanel({ onBackup }: { onBackup: () => void }) {
   );
 }
 
-function SettingsPanel({ onSaved, onDelete }: { onSaved: () => Promise<void>; onDelete: () => void }) {
+const COMMON_CURRENCIES = ['usd', 'cny', 'eur', 'jpy', 'gbp', 'hkd', 'sgd', 'aud', 'cad', 'krw'];
+
+function CurrencyPicker({ value, rates, onChange }: {
+  value: string;
+  rates: Record<string, number>;
+  onChange: (currency: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const root = useRef<HTMLDivElement>(null);
+  const currencies = useMemo(() => {
+    const available = Object.keys(rates);
+    return available.sort((left, right) => {
+      const leftRank = COMMON_CURRENCIES.indexOf(left);
+      const rightRank = COMMON_CURRENCIES.indexOf(right);
+      if (leftRank >= 0 || rightRank >= 0) return (leftRank < 0 ? 999 : leftRank) - (rightRank < 0 ? 999 : rightRank);
+      return left.localeCompare(right);
+    });
+  }, [rates]);
+  const visible = currencies.filter((currency) => currency.includes(query.trim().toLowerCase()));
+  useEffect(() => {
+    function close(event: PointerEvent) {
+      if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
+  function select(currency: string) {
+    onChange(currency);
+    setOpen(false);
+    setQuery('');
+  }
+  return <div className={`currency-picker${open ? ' is-open' : ''}`} ref={root}>
+    <button type="button" className="currency-picker-trigger" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+      <span>{value.toUpperCase()}</span><small>Display currency</small><i>⌄</i>
+    </button>
+    {open && <div className="currency-picker-menu">
+      <label><span>Search currency</span><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="USD, CNY, EUR…" autoComplete="off" /></label>
+      <div role="listbox" aria-label="Display currency">
+        {visible.map((currency) => <button type="button" key={currency} className={currency === value ? 'selected' : ''} onClick={() => select(currency)} role="option" aria-selected={currency === value}>
+          <strong>{currency.toUpperCase()}</strong><small>1 USD = {rates[currency].toLocaleString(undefined, { maximumFractionDigits: 6 })} {currency.toUpperCase()}</small><span>{currency === value ? '✓' : '→'}</span>
+        </button>)}
+        {!visible.length && <p>No matching currency</p>}
+      </div>
+    </div>}
+  </div>;
+}
+
+function SettingsPanel({ currency, currencies, onCurrencyChange, onSaved, onDelete }: {
+  currency: string;
+  currencies: CurrencySnapshot | null;
+  onCurrencyChange: (currency: string) => void;
+  onSaved: () => Promise<void>;
+  onDelete: () => void;
+}) {
   const [gateway, setGateway] = useState(getGatewayUrl());
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1195,15 +1282,20 @@ function SettingsPanel({ onSaved, onDelete }: { onSaved: () => Promise<void>; on
       setSaving(false);
     }
   }
-  return <div className="settings-section-stack enter"><section className="content-card settings-card settings-section">
-    <header className="settings-section-head"><span>02</span><div><p>Network access</p><h2>Chain data gateway</h2></div></header>
+  return <div className="settings-section-stack enter"><section className="content-card settings-section currency-settings">
+    <header className="settings-section-head"><span>02</span><div><p>Market display</p><h2>Preferred currency</h2></div></header>
+    <p className="muted">Wallet amounts remain TSC. This setting only converts the SafeTrade TSC/USDT reference price for display on this device.</p>
+    <CurrencyPicker value={currency} rates={currencies?.rates ?? { usd: 1 }} onChange={onCurrencyChange} />
+    <div className="currency-source"><span>{currencies ? `${Object.keys(currencies.rates).length} currencies · ${currencies.source.replaceAll('-', ' ')}` : 'USD only until currency data is available'}</span>{currencies?.stale && <b>Rates may be outdated</b>}</div>
+  </section><section className="content-card settings-card settings-section">
+    <header className="settings-section-head"><span>03</span><div><p>Network access</p><h2>Chain data gateway</h2></div></header>
     <p className="muted">The gateway supplies public balances, transactions and mempool data, then relays transactions signed locally. It never receives your password or private key.</p>
     <form onSubmit={save} autoComplete="off"><label>HTTPS gateway URL<input value={gateway} onChange={(event) => setGateway(event.target.value)} autoComplete="off" data-1p-ignore="true" data-lpignore="true" spellCheck={false} disabled={saving} /></label><button className="button primary modal-submit" disabled={saving} aria-busy={saving}>{saving && <span className="button-spinner" aria-hidden="true" />}<span>{saving ? 'Verifying gateway…' : 'Save and verify'}</span></button></form>
     {message && <p className="form-message">{message}</p>}
     <div className="gateway-boundary"><span>Your browser</span><i>signed transaction →</i><span>Gateway</span><i>public Core data →</i><span>Wallet UI</span></div>
     <p className="gateway-note">Do not enter a TensorCash Core RPC username, password, token or URL containing credentials.</p>
   </section><section className="content-card settings-section danger-zone">
-    <header className="settings-section-head"><span>03</span><div><p>Local storage</p><h2>Remove this wallet</h2></div></header>
+    <header className="settings-section-head"><span>04</span><div><p>Local storage</p><h2>Remove this wallet</h2></div></header>
     <p className="muted">Erases only this browser's encrypted copy. Blockchain funds remain untouched, but recovery requires a valid backup.</p>
     <button onClick={onDelete}>Remove from this browser</button>
   </section></div>;
@@ -1500,6 +1592,9 @@ export default function App() {
   const [receiveMonitor, setReceiveMonitor] = useState<string | null>(null);
   const [sendMonitor, setSendMonitor] = useState<{ transaction: AddressTransaction; addresses: string[] } | null>(null);
   const [deleteWalletOpen, setDeleteWalletOpen] = useState(false);
+  const [market, setMarket] = useState<MarketSnapshot | null>(null);
+  const [currencies, setCurrencies] = useState<CurrencySnapshot | null>(null);
+  const [displayCurrency, setDisplayCurrency] = useState(() => getDisplayCurrency());
   const receiveMonitorTimer = useRef<number | undefined>(undefined);
   const refreshSequence = useRef(0);
   const hasAccountData = useRef(false);
@@ -1600,6 +1695,21 @@ export default function App() {
     });
   }, []);
   useEffect(() => { if (vault !== undefined) void refresh(); const timer = window.setInterval(refresh, 15_000); return () => window.clearInterval(timer); }, [refresh, vault]);
+  useEffect(() => {
+    let active = true;
+    async function refreshMarket() {
+      const [nextMarket, nextCurrencies] = await Promise.all([loadTscTicker(), loadCurrencyRates()]);
+      if (!active) return;
+      setMarket(nextMarket);
+      setCurrencies(nextCurrencies);
+      if (nextCurrencies && !nextCurrencies.rates[displayCurrency]) {
+        setDisplayCurrency(saveDisplayCurrency('usd'));
+      }
+    }
+    void refreshMarket();
+    const timer = window.setInterval(refreshMarket, 60_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [displayCurrency]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 1800); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => () => window.clearTimeout(receiveMonitorTimer.current), []);
 
@@ -1765,7 +1875,7 @@ export default function App() {
       </header>
       <div className={`chain-notice ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
       {storageWarning && <div className="storage-warning" role="alert"><strong>Local storage recovery notice</strong><span>{storageWarning}</span><button type="button" onClick={() => setStorageWarning('')} aria-label="Dismiss storage warning">×</button></div>}
-      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} receiveAddressCount={activeReceiveAddressCount} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
+      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} receiveAddressCount={activeReceiveAddressCount} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} market={market} currencies={currencies} displayCurrency={displayCurrency} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
       {displayVault && view !== 'overview' && <ToolDrawer key={view} title={title} onClose={() => setView('overview')}>
         {view === 'receive' && <ReceivePanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
         {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault, activeReceiveAddressCount)} />}
@@ -1796,7 +1906,7 @@ export default function App() {
           });
           window.setTimeout(() => void refresh(), 350);
         }} />}
-        {view === 'settings' && vault && <div className="settings-drawer enter"><div className="settings-intro"><span>Wallet settings</span><p>Three focused areas: recovery, network access and local storage.</p></div><RecoveryPanel onBackup={() => setDialog('backup')} /><SettingsPanel onSaved={refresh} onDelete={() => setDeleteWalletOpen(true)} /></div>}
+        {view === 'settings' && vault && <div className="settings-drawer enter"><div className="settings-intro"><span>Wallet settings</span><p>Recovery, market display, network access and this device's encrypted wallet storage.</p></div><RecoveryPanel onBackup={() => setDialog('backup')} /><SettingsPanel currency={displayCurrency} currencies={currencies} onCurrencyChange={(currency) => setDisplayCurrency(saveDisplayCurrency(currency))} onSaved={refresh} onDelete={() => setDeleteWalletOpen(true)} /></div>}
         {view === 'wallets' && <WalletsPanel wallets={wallets} activeId={displayVault.walletId} switching={switchingWallet} onSwitch={(walletId) => void switchWallet(walletId)} onCreate={() => setDialog('create')} onImport={() => setDialog('import')} />}
       </ToolDrawer>}
       {receiveMonitor && <ReceiveWatchModal address={receiveMonitor} onClose={closeReceiveMonitor} onCopy={copy} />}
