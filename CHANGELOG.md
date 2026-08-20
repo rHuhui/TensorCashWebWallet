@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.8 - 2026-08-21
+
+- Add optional, per-wallet Passkey authorization for unlock, backup, signing,
+  and wallet-access management while keeping password fallback available in
+  every sensitive flow.
+- Preserve the existing encrypted-vault schema and password decryption path so
+  every pre-1.0.8 wallet continues to unlock with its original password without
+  migration.
+- Let newly created and imported wallets choose Passkey-first setup without
+  keyboard password entry or explicitly choose password-only setup without a
+  forced Passkey prompt.
+- Add a focused wallet-access modal with an explicit wallet selector, password
+  changes, legacy-wallet Passkey enrollment after original-password
+  verification, and Passkey-authenticated removal with password fallback.
+- Add persistent floating backup warnings for every unbacked local wallet and a
+  one-time Passkey recommendation for password-only wallets, with correct
+  stacked positioning when both notices are present.
+- Add an animated independent-security-check prompt explaining DNS and local
+  network hijacking risks before users enter a wallet password.
+
+No wallet or backup migration, gateway API change, Core upgrade, or operator
+action is required. Existing wallet passwords remain valid. Passkey support is
+optional and requires a compatible browser on the same trusted HTTPS origin;
+the wallet password remains the recovery and compatibility fallback.
+
 ## 1.0.7 - 2026-08-18
 
 - Add a live TSC/USDT reference price from SafeTrade with an independent,

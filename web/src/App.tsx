@@ -13,9 +13,18 @@ import {
 } from './lib/qtWallet';
 import { decryptWallet, encryptWallet, validateVault, vaultFingerprint } from './lib/vault';
 import {
+  createPasskeyState,
+  generateFallbackPassword,
+  passkeyUnavailableReason,
+  rewrapPasskeyPassword,
+  unlockPasswordWithPasskey,
+  type WalletPasskeyState,
+} from './lib/passkey';
+import {
   activateVault,
   loadAccountCache,
   loadBackupState,
+  loadPasskeyState,
   loadReceiveAddressCount,
   loadVault,
   loadVaultInventory,
@@ -24,7 +33,9 @@ import {
   saveReceiveAddressCount,
   saveBackupState,
   saveAccountCache,
+  savePasskeyState,
   saveVault,
+  saveVaultAndPasskeyState,
   type WalletBackupState,
 } from './lib/storage';
 import {
@@ -78,6 +89,12 @@ import type {
 
 type View = 'overview' | 'receive' | 'send' | 'activity' | 'addresses' | 'settings' | 'wallets';
 type Dialog = 'create' | 'import' | 'unlock' | 'backup' | null;
+interface GeneratedFallbackNotice {
+  walletName: string;
+  address: string;
+  password: string;
+  origin: 'created' | 'imported';
+}
 
 const SOURCE_URL = import.meta.env.VITE_SOURCE_URL || 'https://github.com/rHuhui/TensorCashWebWallet';
 const VERIFY_URL = import.meta.env.VITE_VERIFY_URL || 'https://rhuhui.github.io/TensorCashWebWallet/';
@@ -85,6 +102,7 @@ const EXPLORER_URL = (import.meta.env.VITE_EXPLORER_URL || 'https://tscscan.xyz'
 const APP_VERSION = packageMetadata.version;
 const TSC = 100_000_000;
 const FRESH_CHANGE_ADDRESS = '__fresh_internal_change__';
+const PASSKEY_RECOMMENDATION_SEEN_KEY = 'tensorcash-passkey-recommendation-seen-v1';
 
 function explorerTransactionUrl(txid: string) {
   return `${EXPLORER_URL}/tx/${encodeURIComponent(txid)}`;
@@ -171,6 +189,77 @@ function SecurityIcon() {
       <path fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" d="m8.5 12.1 2.2 2.2 4.9-5" />
     </svg>
   );
+}
+
+function SecurityCheckLink() {
+  return (
+    <span className="security-check">
+      <a
+        className="security-link"
+        href={VERIFY_URL}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Open the independent security check before entering your wallet password"
+        aria-describedby="security-dns-tip"
+      >
+        <SecurityIcon />
+        <span className="security-attention" aria-hidden="true">!</span>
+      </a>
+      <span className="security-tip" id="security-dns-tip" role="tooltip">
+        <span className="security-tip-label">SECURITY CHECK</span>
+        <strong>Verify the page before entering your password</strong>
+        <span>
+          DNS or local-network hijacking can replace this page with a fake wallet. Open the independent security check and confirm every file matches before unlocking, backing up, or sending. Do not enter your password after a certificate warning or file mismatch.
+        </span>
+        <a href={VERIFY_URL} target="_blank" rel="noreferrer">Open security check <span aria-hidden="true">↗</span></a>
+      </span>
+    </span>
+  );
+}
+
+function RecoveryBackupWarning({ vault, additionalCount, active, onBackup }: {
+  vault: EncryptedVault;
+  additionalCount: number;
+  active: boolean;
+  onBackup: () => void;
+}) {
+  return (
+    <section className="backup-alert" role="alert" aria-live="polite">
+      <span className="backup-alert-icon" aria-hidden="true">!</span>
+      <span className="backup-alert-copy">
+        <strong>
+          {walletLabel(vault)} <code>({short(vault.address, 13, 10)})</code> has not been backed up
+        </strong>
+        <span>
+          This wallet exists only in this browser. Clearing site data, resetting the browser, or losing this device can permanently remove access to the wallet and its funds.
+          {additionalCount > 0 && ` ${additionalCount} other local wallet${additionalCount === 1 ? '' : 's'} also need${additionalCount === 1 ? 's' : ''} a backup.`}
+        </span>
+      </span>
+      <button type="button" onClick={onBackup}>{active ? 'Back up now' : 'Switch & back up'}</button>
+    </section>
+  );
+}
+
+function PasskeyRecommendation({ vault, additionalCount, onSetup, onDismiss }: {
+  vault: EncryptedVault;
+  additionalCount: number;
+  onSetup: () => void;
+  onDismiss: () => void;
+}) {
+  return <section className="passkey-recommendation" role="status" aria-live="polite">
+    <span className="passkey-recommendation-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="4"/><path d="m11 12 8 8m-2-2 2-2m-5-1 2-2"/></svg></span>
+    <span className="passkey-recommendation-copy">
+      <strong>Protect {walletLabel(vault)} <code>({short(vault.address, 13, 10)})</code> with Passkey</strong>
+      <span>
+        Passkey uses your device's secure verification and reduces exposure to keyboard-recording and clipboard-monitoring malware. Your wallet password always remains available as a fallback.
+        {additionalCount > 0 && ` ${additionalCount} other password-only wallet${additionalCount === 1 ? '' : 's'} can also be upgraded.`}
+      </span>
+    </span>
+    <span className="passkey-recommendation-actions">
+      <button className="passkey-recommendation-setup" type="button" onClick={onSetup}>Set up Passkey</button>
+      <button className="passkey-recommendation-dismiss" type="button" onClick={onDismiss} aria-label="Dismiss Passkey recommendation">×</button>
+    </span>
+  </section>;
 }
 
 function WalletSwitchIcon() {
@@ -914,9 +1003,10 @@ function ChangeAddressPicker({ value, options, disabled, onChange }: {
   </div>;
 }
 
-function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSent, onVaultUpdated }: {
+function SendPanel({ vault, wallets, passkeyState, receiveAddressCount, fundedAddresses, onSent, onVaultUpdated }: {
   vault: EncryptedVault;
   wallets: EncryptedVault[];
+  passkeyState: WalletPasskeyState | null;
   receiveAddressCount: number;
   fundedAddresses: WalletAddressBalance[];
   onSent: (transaction: AddressTransaction, walletAddresses: string[]) => Promise<void>;
@@ -925,6 +1015,7 @@ function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSen
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
   const [password, setPassword] = useState('');
+  const [authMethod, setAuthMethod] = useState<'passkey' | 'password'>(passkeyState ? 'passkey' : 'password');
   const [plan, setPlan] = useState<TransactionPlan | null>(null);
   const [reviewUtxos, setReviewUtxos] = useState<WalletUtxo[]>([]);
   const [busy, setBusy] = useState<'review' | 'send' | ''>('');
@@ -988,7 +1079,9 @@ function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSen
     setChangeAddress(FRESH_CHANGE_ADDRESS);
     setPlan(null);
     setHighFeeConfirmed(false);
-  }, [vault.walletId, receiveAddressCount]);
+    setPassword('');
+    setAuthMethod(passkeyState ? 'passkey' : 'password');
+  }, [vault.walletId, receiveAddressCount, passkeyState]);
 
   useEffect(() => {
     let active = true;
@@ -1060,7 +1153,10 @@ function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSen
       // Password KDF and local signing can occupy the main thread. Give React
       // two frames to commit and paint the spinner before that work begins.
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
-      const unlocked = await decryptWallet(vault, password);
+      const walletPassword = authMethod === 'passkey' && passkeyState
+        ? await unlockPasswordWithPasskey(passkeyState)
+        : password;
+      const unlocked = await decryptWallet(vault, walletPassword);
       if (unlocked.key.algorithm !== 'CORE-DESCRIPTOR' || !('qt' in unlocked)) {
         throw new Error('This wallet key type cannot sign standard TSC transfers yet');
       }
@@ -1074,7 +1170,7 @@ function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSen
           const reservation = await reserveQtChangeAddress(coreMaterial);
           coreMaterial = reservation.material;
           selectedChangeAddress = reservation.address;
-          const updatedVault = await encryptWallet(coreMaterial, password, { allowLegacyPassword: true }, vault.walletName);
+          const updatedVault = await encryptWallet(coreMaterial, walletPassword, { allowLegacyPassword: true }, vault.walletName);
           await saveVault(updatedVault);
           onVaultUpdated?.(updatedVault);
           setChangeAddress(reservation.address);
@@ -1187,10 +1283,18 @@ function SendPanel({ vault, wallets, receiveAddressCount, fundedAddresses, onSen
             <div><dt>Change address</dt><dd title={changeAddress === FRESH_CHANGE_ADDRESS ? 'Fresh internal address' : changeAddress}>{plan.changeSats ? (changeAddress === FRESH_CHANGE_ADDRESS ? 'Fresh internal address reserved at signing' : short(changeAddress, 15, 13)) : 'No change output'}</dd></div>
           </dl>
           {requiresHighFeeConfirmation(plan) && <label className="high-fee-confirm"><input type="checkbox" checked={highFeeConfirmed} onChange={(event) => setHighFeeConfirmed(event.target.checked)} /><span><strong>Confirm high network fee</strong><small>The {formatTsc(plan.feeSats)} TSC fee is more than 1% of this payment. The absolute safety ceiling still applies.</small></span></label>}
-          <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={6} />
-          <p className="send-confirm-note">Password verification and signing happen only on this device. The selected change address is rechecked as wallet-owned before broadcast.</p>
+          {passkeyState && authMethod === 'passkey' ? <PasskeyAuthorization
+            title="Authorize signing with Passkey"
+            detail="Your device will verify you before the transaction is signed locally."
+            disabled={Boolean(busy)}
+            onUsePassword={() => { setAuthMethod('password'); setError(''); }}
+          /> : <>
+            <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={6} />
+            {passkeyState && <button className="auth-method-switch" type="button" disabled={Boolean(busy)} onClick={() => { setAuthMethod('passkey'); setPassword(''); setError(''); }}>Use Passkey instead</button>}
+          </>}
+          <p className="send-confirm-note">Authentication and signing happen only on this device. Password fallback always remains available. The selected change address is rechecked as wallet-owned before broadcast.</p>
           {error && <p className="send-error" role="alert">{error}</p>}
-          <div className="send-review-actions"><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => { setPlan(null); setError(''); setPassword(''); setHighFeeConfirmed(false); }}>Edit</button><button className="button primary modal-submit" disabled={Boolean(busy) || password.length < 6 || (requiresHighFeeConfirmation(plan) && !highFeeConfirmed)} aria-busy={busy === 'send'}>{busy === 'send' && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'send' ? 'Signing and verifying…' : 'Sign and broadcast'}</span></button></div>
+          <div className="send-review-actions"><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => { setPlan(null); setError(''); setPassword(''); setHighFeeConfirmed(false); }}>Edit</button><button className="button primary modal-submit" disabled={Boolean(busy) || (authMethod === 'password' && password.length < 6) || (requiresHighFeeConfirmation(plan) && !highFeeConfirmed)} aria-busy={busy === 'send'}>{busy === 'send' && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'send' ? 'Signing and verifying…' : authMethod === 'passkey' && passkeyState ? 'Continue with Passkey' : 'Sign and broadcast'}</span></button></div>
         </form>}
       </div>
     </section>
@@ -1201,13 +1305,180 @@ function RecoveryPanel({ onBackup }: { onBackup: () => void }) {
   return (
     <div className="settings-section-stack">
       <section className="content-card settings-section recovery-section">
-        <header className="settings-section-head"><span>01</span><div><p>Recovery</p><h2>Backup this wallet</h2></div></header>
+        <header className="settings-section-head"><span>02</span><div><p>Recovery</p><h2>Backup this wallet</h2></div></header>
         <p className="muted">There is no account reset or server copy. Keep the recovery backup in at least two independent places. Qt-compatible wallets retain their original file format.</p>
         <div className="warning-box"><strong>Never store the password beside the backup.</strong><span>Anyone with both can control the funds.</span></div>
         <button className="button primary settings-action" onClick={onBackup}>Export recovery backup</button>
       </section>
     </div>
   );
+}
+
+function WalletSecurityPanel({ passkeyState, onManage }: {
+  passkeyState: WalletPasskeyState | null;
+  onManage: () => void;
+}) {
+  return <div className="settings-section-stack enter">
+    <section className="content-card settings-section wallet-security-section">
+      <header className="settings-section-head"><span>01</span><div><p>Wallet access</p><h2>Passkey and password</h2></div></header>
+      <div className={`passkey-status ${passkeyState ? 'enabled' : 'legacy'}`}><i aria-hidden="true">{passkeyState ? '✓' : '!'}</i><span><strong>{passkeyState ? 'Passkey enabled' : 'Password-only wallet'}</strong><small>{passkeyState ? 'Passkey appears first; the wallet password is always available as fallback.' : 'This wallet unlocks with its password. Passkey can be added after password verification.'}</small></span></div>
+      <p className="muted">Review or change this wallet's local unlock methods in one focused window.</p>
+      <button className="button primary settings-action" type="button" onClick={onManage}>Manage wallet access</button>
+    </section>
+  </div>;
+}
+
+function WalletSecurityModal({ wallets, initialWalletId, initialTab, passkeyStates, onClose, onChanged }: {
+  wallets: EncryptedVault[];
+  initialWalletId: string;
+  initialTab: 'password' | 'passkey';
+  passkeyStates: Record<string, WalletPasskeyState | null>;
+  onClose: () => void;
+  onChanged: (vault: EncryptedVault, passkeyState: WalletPasskeyState | null) => void;
+}) {
+  const [selectedWalletId, setSelectedWalletId] = useState(initialWalletId);
+  const vault = wallets.find((wallet) => wallet.walletId === selectedWalletId) ?? wallets[0];
+  const passkeyState = vault ? passkeyStates[vault.walletId] ?? null : null;
+  const [tab, setTab] = useState<'password' | 'passkey'>(initialTab);
+  const [enablePassword, setEnablePassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [keepPasskey, setKeepPasskey] = useState(Boolean(passkeyState));
+  const [removeAuthMethod, setRemoveAuthMethod] = useState<'passkey' | 'password'>(() => passkeyState && !passkeyUnavailableReason() ? 'passkey' : 'password');
+  const [busy, setBusy] = useState<'enable' | 'remove' | 'change' | ''>('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const passkeyIssue = passkeyUnavailableReason();
+  const localhostUrl = typeof location !== 'undefined' && (/^(?:127(?:\.\d{1,3}){3})$/.test(location.hostname) || location.hostname.includes(':'))
+    ? (() => { const url = new URL(location.href); url.hostname = 'localhost'; return url.href; })()
+    : null;
+
+  useEffect(() => {
+    setEnablePassword('');
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setKeepPasskey(Boolean(passkeyState));
+    setRemoveAuthMethod(passkeyState && !passkeyUnavailableReason() ? 'passkey' : 'password');
+    setMessage('');
+    setError('');
+  }, [vault?.walletId]);
+
+  if (!vault) return null;
+
+  async function run(kind: 'enable' | 'remove' | 'change', action: () => Promise<void>) {
+    if (busy) return;
+    setBusy(kind);
+    setError('');
+    setMessage('');
+    try {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+      await action();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Wallet security update failed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function enable(event: FormEvent) {
+    event.preventDefault();
+    void run('enable', async () => {
+      if (passkeyIssue) throw new Error(passkeyIssue);
+      await decryptWallet(vault, enablePassword);
+      const next = await createPasskeyState(vault, enablePassword);
+      await savePasskeyState(next);
+      setEnablePassword('');
+      setKeepPasskey(true);
+      onChanged(vault, next);
+      setMessage('Passkey enabled. The original wallet password remains available everywhere.');
+    });
+  }
+
+  function remove(event: FormEvent) {
+    event.preventDefault();
+    void run('remove', async () => {
+      if (!passkeyState) throw new Error('This wallet does not have a Passkey to remove.');
+      const verificationPassword = removeAuthMethod === 'passkey'
+        ? await unlockPasswordWithPasskey(passkeyState)
+        : enablePassword;
+      await decryptWallet(vault, verificationPassword);
+      await saveVaultAndPasskeyState(vault, null);
+      setEnablePassword('');
+      setKeepPasskey(false);
+      onChanged(vault, null);
+      setMessage('Passkey removed. This wallet now unlocks with its existing password only.');
+    });
+  }
+
+  function changePassword(event: FormEvent) {
+    event.preventDefault();
+    void run('change', async () => {
+      if (newPassword !== confirmPassword) throw new Error('New passwords do not match');
+      const material = await decryptWallet(vault, currentPassword);
+      const nextVault = await encryptWallet(material, newPassword, {}, vault.walletName);
+      const nextPasskey = passkeyState && keepPasskey
+        ? await rewrapPasskeyPassword(passkeyState, newPassword)
+        : null;
+      await saveVaultAndPasskeyState(nextVault, nextPasskey);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setKeepPasskey(Boolean(nextPasskey));
+      onChanged(nextVault, nextPasskey);
+      setMessage(nextPasskey
+        ? 'Browser wallet password changed. Passkey and the new password can both unlock it.'
+        : 'Browser wallet password changed. Password-only unlock is active.');
+    });
+  }
+
+  return <div className="modal-backdrop wallet-security-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget && !busy) onClose();
+  }}>
+    <section className="modal wallet-security-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-security-title">
+      <button className="modal-close" onClick={onClose} aria-label="Close wallet access settings" disabled={Boolean(busy)}>×</button>
+      <p className="eyebrow">WALLET ACCESS</p>
+      <h2 id="wallet-security-title">Manage wallet access</h2>
+      <label className="security-wallet-picker">
+        <span>Wallet to manage</span>
+        <select value={vault.walletId} disabled={Boolean(busy)} onChange={(event) => setSelectedWalletId(event.target.value)}>
+          {wallets.map((wallet) => <option key={wallet.walletId} value={wallet.walletId}>{walletLabel(wallet)} · {short(wallet.address, 13, 9)}</option>)}
+        </select>
+        <small>Password and Passkey changes apply only to the wallet selected here.</small>
+      </label>
+      <div className={`passkey-status ${passkeyState ? 'enabled' : 'legacy'}`}><i aria-hidden="true">{passkeyState ? '✓' : '!'}</i><span><strong>{passkeyState ? 'Passkey enabled' : 'Password-only wallet'}</strong><small>{passkeyState ? 'Password fallback remains available.' : 'The current password remains unchanged.'}</small></span></div>
+      <div className="security-modal-tabs" role="tablist" aria-label="Wallet access settings">
+        <button type="button" role="tab" aria-selected={tab === 'password'} className={tab === 'password' ? 'active' : ''} disabled={Boolean(busy)} onClick={() => { setTab('password'); setError(''); setMessage(''); }}>Change password</button>
+        <button type="button" role="tab" aria-selected={tab === 'passkey'} className={tab === 'passkey' ? 'active' : ''} disabled={Boolean(busy)} onClick={() => { setTab('passkey'); setError(''); setMessage(''); }}>Passkey</button>
+      </div>
+      {tab === 'password' ? <form className="security-password-form security-modal-content" onSubmit={changePassword} autoComplete="off">
+        <PasswordField label="Current wallet password" value={currentPassword} onChange={setCurrentPassword} minLength={6} />
+        <div className="security-new-passwords"><PasswordField label="New wallet password" value={newPassword} onChange={setNewPassword} minLength={12} /><PasswordField label="Confirm new password" value={confirmPassword} onChange={setConfirmPassword} minLength={12} /></div>
+        <PasswordStrength password={newPassword} />
+        {passkeyState && <label className="keep-passkey-choice"><input type="checkbox" checked={keepPasskey} onChange={(event) => setKeepPasskey(event.target.checked)} /><span><strong>Keep Passkey enabled</strong><small>This requires a Passkey prompt to wrap the new password. If Passkey is unavailable, uncheck this to continue with password-only access.</small></span></label>}
+        <p className="password-container-warning">This changes the browser wallet password. An imported or Qt-compatible wallet.dat keeps its own existing file passphrase.</p>
+        <button className="button primary modal-submit" disabled={Boolean(busy)} aria-busy={busy === 'change'}>{busy === 'change' && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'change' ? 'Changing password…' : 'Verify and change password'}</span></button>
+      </form> : <div className="security-modal-content">
+        <p className="muted">Passkey data is separate from the password-encrypted vault. Removing or losing Passkey does not change the wallet password.</p>
+        {!passkeyState && passkeyIssue && <div className="passkey-enrollment-note unavailable"><strong>Passkey cannot be added from this address</strong><span>{passkeyIssue}</span>{localhostUrl && <><a className="localhost-passkey-link" href={localhostUrl}>Open this build on localhost</a><small className="localhost-origin-warning">localhost has separate browser storage. Existing 127.0.0.1 wallets are not moved automatically.</small></>}</div>}
+        {(passkeyState || !passkeyIssue) && <form className="security-inline-form" onSubmit={passkeyState ? remove : enable} autoComplete="off">
+          {passkeyState && removeAuthMethod === 'passkey' ? <PasskeyAuthorization
+            title="Confirm with Passkey"
+            detail="Your system will verify the Passkey for this wallet before it is removed. The wallet password remains unchanged."
+            disabled={Boolean(busy)}
+            onUsePassword={() => { setRemoveAuthMethod('password'); setEnablePassword(''); setError(''); }}
+          /> : <>
+            <PasswordField label="Current wallet password" value={enablePassword} onChange={setEnablePassword} minLength={6} />
+            {passkeyState && <button className="auth-method-switch" type="button" disabled={Boolean(busy) || Boolean(passkeyIssue)} onClick={() => { setRemoveAuthMethod('passkey'); setEnablePassword(''); setError(''); }}>Use Passkey instead</button>}
+          </>}
+          <button className={`button ${passkeyState ? 'secondary' : 'primary'} modal-submit`} disabled={Boolean(busy)} aria-busy={busy === 'enable' || busy === 'remove'}>{(busy === 'enable' || busy === 'remove') && <span className="button-spinner" aria-hidden="true" />}<span>{busy === 'enable' ? 'Adding Passkey…' : busy === 'remove' ? 'Removing Passkey…' : passkeyState ? (removeAuthMethod === 'passkey' ? 'Verify Passkey and remove' : 'Verify password and remove Passkey') : 'Verify password and add Passkey'}</span></button>
+        </form>}
+      </div>}
+      {error && <p className="form-error security-modal-message" role="alert">{error}</p>}
+      {message && <p className="form-message security-modal-message" role="status">{message}</p>}
+    </section>
+  </div>;
 }
 
 const COMMON_CURRENCIES = ['usd', 'cny', 'eur', 'jpy', 'gbp', 'hkd', 'sgd', 'aud', 'cad', 'krw'];
@@ -1283,19 +1554,19 @@ function SettingsPanel({ currency, currencies, onCurrencyChange, onSaved, onDele
     }
   }
   return <div className="settings-section-stack enter"><section className="content-card settings-section currency-settings">
-    <header className="settings-section-head"><span>02</span><div><p>Market display</p><h2>Preferred currency</h2></div></header>
+    <header className="settings-section-head"><span>03</span><div><p>Market display</p><h2>Preferred currency</h2></div></header>
     <p className="muted">Wallet amounts remain TSC. This setting only converts the SafeTrade TSC/USDT reference price for display on this device.</p>
     <CurrencyPicker value={currency} rates={currencies?.rates ?? { usd: 1 }} onChange={onCurrencyChange} />
     <div className="currency-source"><span>{currencies ? `${Object.keys(currencies.rates).length} currencies · ${currencies.source.replaceAll('-', ' ')}` : 'USD only until currency data is available'}</span>{currencies?.stale && <b>Rates may be outdated</b>}</div>
   </section><section className="content-card settings-card settings-section">
-    <header className="settings-section-head"><span>03</span><div><p>Network access</p><h2>Chain data gateway</h2></div></header>
+    <header className="settings-section-head"><span>04</span><div><p>Network access</p><h2>Chain data gateway</h2></div></header>
     <p className="muted">The gateway supplies public balances, transactions and mempool data, then relays transactions signed locally. It never receives your password or private key.</p>
     <form onSubmit={save} autoComplete="off"><label>HTTPS gateway URL<input value={gateway} onChange={(event) => setGateway(event.target.value)} autoComplete="off" data-1p-ignore="true" data-lpignore="true" spellCheck={false} disabled={saving} /></label><button className="button primary modal-submit" disabled={saving} aria-busy={saving}>{saving && <span className="button-spinner" aria-hidden="true" />}<span>{saving ? 'Verifying gateway…' : 'Save and verify'}</span></button></form>
     {message && <p className="form-message">{message}</p>}
     <div className="gateway-boundary"><span>Your browser</span><i>signed transaction →</i><span>Gateway</span><i>public Core data →</i><span>Wallet UI</span></div>
     <p className="gateway-note">Do not enter a TensorCash Core RPC username, password, token or URL containing credentials.</p>
   </section><section className="content-card settings-section danger-zone">
-    <header className="settings-section-head"><span>04</span><div><p>Local storage</p><h2>Remove this wallet</h2></div></header>
+    <header className="settings-section-head"><span>05</span><div><p>Local storage</p><h2>Remove this wallet</h2></div></header>
     <p className="muted">Erases only this browser's encrypted copy. Blockchain funds remain untouched, but recovery requires a valid backup.</p>
     <button onClick={onDelete}>Remove from this browser</button>
   </section></div>;
@@ -1366,6 +1637,29 @@ function DeleteWalletModal({ wallet, onClose, onConfirm }: {
   </div>;
 }
 
+function GeneratedFallbackModal({ notice, onDone }: {
+  notice: GeneratedFallbackNotice;
+  onDone: () => void;
+}) {
+  const [saved, setSaved] = useState(false);
+  return <div className="modal-backdrop generated-password-backdrop" role="presentation">
+    <section className="modal generated-password-modal" role="dialog" aria-modal="true" aria-labelledby="generated-password-title">
+      <div className="generated-password-icon" aria-hidden="true">⌁</div>
+      <p className="eyebrow">PASSWORD FALLBACK</p>
+      <h2 id="generated-password-title">Save this password offline</h2>
+      <p className="modal-lead">Passkey is the default for <strong>{notice.walletName}</strong>. This generated password is the emergency way back in if Passkey becomes unavailable.</p>
+      <div className="generated-password-value"><span>Generated wallet password</span><code>{notice.password}</code></div>
+      <div className="generated-password-guidance"><strong>Write it down and keep it away from this device.</strong><span>There is intentionally no Copy button because clipboard monitoring is part of the threat model. Never store this password beside the wallet backup.</span></div>
+      <div className="generated-password-wallet"><span>{notice.walletName}</span><code>{short(notice.address, 16, 12)}</code></div>
+      <p className="generated-password-scope">{notice.origin === 'created'
+        ? 'This password unlocks the browser wallet and its generated Qt-compatible wallet.dat backup.'
+        : 'This password unlocks the imported browser wallet. The source Qt/Web backup keeps its existing password.'}</p>
+      <label className="generated-password-confirm"><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /><span>I saved this fallback password somewhere safe.</span></label>
+      <button className="button primary wide" type="button" disabled={!saved} onClick={onDone}>Continue to wallet</button>
+    </section>
+  </div>;
+}
+
 function PasswordField({
   label,
   value,
@@ -1384,6 +1678,19 @@ function PasswordField({
   return <label>{label}<span className="password-input"><input type={visible ? 'text' : 'password'} autoComplete="new-password" data-1p-ignore="true" data-lpignore="true" data-form-type="other" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={updateCapsLock} onKeyUp={updateCapsLock} onBlur={() => setCapsLock(false)} minLength={minLength} required /><button className="password-toggle" type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`} aria-pressed={visible}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.75"/></svg></button></span>{(capsLock || hasOuterWhitespace) && <small className="password-entry-hint" role="status">{capsLock ? 'Caps Lock is on.' : 'Leading or trailing spaces are part of this password.'}</small>}</label>;
 }
 
+function PasskeyAuthorization({ title, detail, disabled = false, onUsePassword }: {
+  title: string;
+  detail: string;
+  disabled?: boolean;
+  onUsePassword: () => void;
+}) {
+  return <div className="passkey-authorization">
+    <span className="passkey-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="4"/><path d="m11 12 8 8m-2-2 2-2m-5-1 2-2"/></svg></span>
+    <div><strong>{title}</strong><small>{detail}</small></div>
+    <button className="auth-method-switch" type="button" disabled={disabled} onClick={onUsePassword}>Use wallet password</button>
+  </div>;
+}
+
 function PasswordStrength({ password }: { password: string }) {
   const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((pattern) => pattern.test(password)).length;
   const score = Math.max(0, Math.min(4, (password.length >= 12 ? 1 : 0) + (password.length >= 16 ? 1 : 0) + Math.min(2, classes - 1)));
@@ -1391,18 +1698,22 @@ function PasswordStrength({ password }: { password: string }) {
   return <div className={`password-strength score-${score}`} aria-live="polite"><span>{[0, 1, 2, 3].map((index) => <i key={index} className={index < score ? 'active' : ''} />)}</span><small>{label} · 12 characters minimum</small></div>;
 }
 
-function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated, onUnlocked, onImported, onBackedUp }: {
+function Modal({ dialog, vault, passkeyState, requestedReceiveAddressCount, onClose, onCreated, onUnlocked, onImported, onBackedUp }: {
   dialog: Exclude<Dialog, null>;
   vault: EncryptedVault | null;
+  passkeyState: WalletPasskeyState | null;
   requestedReceiveAddressCount: number;
   onClose: () => void;
-  onCreated: (vault: EncryptedVault, material: WalletMaterial) => void;
+  onCreated: (vault: EncryptedVault, material: WalletMaterial, passkey: WalletPasskeyState | null, generatedFallback?: string) => void;
   onUnlocked: (material: WalletMaterial, vault?: EncryptedVault) => void;
-  onImported: (vault: EncryptedVault, material: WalletMaterial) => void;
+  onImported: (vault: EncryptedVault, material: WalletMaterial, passkey: WalletPasskeyState | null, generatedFallback?: string) => void;
   onBackedUp: () => void;
 }) {
   const [password, setPassword] = useState('');
+  const [authMethod, setAuthMethod] = useState<'passkey' | 'password'>(passkeyState ? 'passkey' : 'password');
   const [confirm, setConfirm] = useState('');
+  const [creationMethod, setCreationMethod] = useState<'passkey' | 'password'>('passkey');
+  const [webBackupPassword, setWebBackupPassword] = useState('');
   const [walletName, setWalletName] = useState('');
   const [qtPassword, setQtPassword] = useState('');
   const [source, setSource] = useState('');
@@ -1429,16 +1740,25 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (dialog === 'create') return run(async () => {
-      if (password !== confirm) throw new Error('Passwords do not match');
+      if (creationMethod === 'passkey') {
+        const unavailable = passkeyUnavailableReason();
+        if (unavailable) throw new Error(unavailable);
+      }
+      if (creationMethod === 'password' && password !== confirm) throw new Error('Passwords do not match');
       if (!walletName.trim()) throw new Error('Enter a name for this wallet');
-      const material = await createQtWalletMaterial(password);
-      const encrypted = await encryptWallet(material, password, {}, walletName);
-      await saveVault(encrypted);
-      onCreated(encrypted, material);
+      const fallbackPassword = creationMethod === 'password' ? password : generateFallbackPassword();
+      const material = await createQtWalletMaterial(fallbackPassword);
+      const encrypted = await encryptWallet(material, fallbackPassword, {}, walletName);
+      const passkey = creationMethod === 'passkey' ? await createPasskeyState(encrypted, fallbackPassword) : null;
+      await saveVaultAndPasskeyState(encrypted, passkey);
+      onCreated(encrypted, material, passkey, creationMethod === 'passkey' ? fallbackPassword : undefined);
     });
     if (dialog === 'unlock' || dialog === 'backup') return run(async () => {
       if (!vault) throw new Error('No local wallet found');
-      let material = await decryptWallet(vault, password);
+      const walletPassword = authMethod === 'passkey' && passkeyState
+        ? await unlockPasswordWithPasskey(passkeyState)
+        : password;
+      let material = await decryptWallet(vault, walletPassword);
       let migratedVault: EncryptedVault | undefined;
       if ('qt' in material) {
         material = hydrateQtAddressState(material);
@@ -1449,50 +1769,52 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
         const receiveChanged = JSON.stringify(vault.receiveAddresses ?? []) !== JSON.stringify(material.qt.receiveAddresses ?? []);
         const countChanged = vault.receiveAddressCount !== material.qt.receiveAddressCount;
         if (addressesChanged || receiveChanged || countChanged) {
-          migratedVault = await encryptWallet(material, password, { allowLegacyPassword: true }, vault.walletName);
+          migratedVault = await encryptWallet(material, walletPassword, { allowLegacyPassword: true }, vault.walletName);
           await saveVault(migratedVault);
         }
       }
       if (dialog === 'backup') {
-        if (!(await downloadQtBackup(material))) downloadBackup(vault);
+        if (!(await downloadQtBackup(material))) downloadBackup(migratedVault ?? vault);
         onBackedUp();
         onUnlocked(material, migratedVault);
       } else onUnlocked(material, migratedVault);
     });
     return run(async () => {
-      if (password !== confirm) throw new Error('Passwords do not match');
+      if (creationMethod === 'passkey') {
+        const unavailable = passkeyUnavailableReason();
+        if (unavailable) throw new Error(unavailable);
+      }
+      if (creationMethod === 'password' && password !== confirm) throw new Error('Passwords do not match');
       if (!walletName.trim()) throw new Error('Enter a name for this wallet');
       if (!sourceFile) throw new Error('Choose a wallet backup file');
+      const fallbackPassword = creationMethod === 'password' ? password : generateFallbackPassword();
       if (sourceFile && qtEncrypted !== null) {
         const bytes = new Uint8Array(await sourceFile.arrayBuffer());
         const material = await importQtWallet(bytes, qtPassword);
-        const encrypted = await encryptWallet(material, password, {}, walletName);
-        await saveVault(encrypted);
-        onImported(encrypted, material);
+        const encrypted = await encryptWallet(material, fallbackPassword, {}, walletName);
+        const passkey = creationMethod === 'passkey' ? await createPasskeyState(encrypted, fallbackPassword) : null;
+        await saveVaultAndPasskeyState(encrypted, passkey);
+        onImported(encrypted, material, passkey, creationMethod === 'passkey' ? fallbackPassword : undefined);
         return;
       }
       const parsed = JSON.parse(source) as unknown;
       try {
         validateVault(parsed);
-        let material = await decryptWallet(parsed, password);
-        let restoredVault = parsed;
-        let metadataChanged = parsed.walletName !== walletName.trim();
+        let material = await decryptWallet(parsed, webBackupPassword);
         if ('qt' in material) {
           material = hydrateQtAddressState(material);
-          const addressesChanged = JSON.stringify(parsed.addresses ?? []) !== JSON.stringify(material.qt.addresses);
-          const receiveChanged = JSON.stringify(parsed.receiveAddresses ?? []) !== JSON.stringify(material.qt.receiveAddresses ?? []);
-          const countChanged = parsed.receiveAddressCount !== material.qt.receiveAddressCount;
-          metadataChanged ||= addressesChanged || receiveChanged || countChanged;
         }
-        if (metadataChanged) restoredVault = await encryptWallet(material, password, { allowLegacyPassword: true }, walletName);
-        await saveVault(restoredVault);
-        onImported(restoredVault, material);
+        const restoredVault = await encryptWallet(material, fallbackPassword, {}, walletName);
+        const passkey = creationMethod === 'passkey' ? await createPasskeyState(restoredVault, fallbackPassword) : null;
+        await saveVaultAndPasskeyState(restoredVault, passkey);
+        onImported(restoredVault, material, passkey, creationMethod === 'passkey' ? fallbackPassword : undefined);
       } catch (vaultError) {
         if ((parsed as { schema?: string })?.schema === 'org.tensorcash.webwallet.vault') throw vaultError;
         const material = await importOfficialWalletExport(parsed);
-        const encrypted = await encryptWallet(material, password, {}, walletName);
-        await saveVault(encrypted);
-        onImported(encrypted, material);
+        const encrypted = await encryptWallet(material, fallbackPassword, {}, walletName);
+        const passkey = creationMethod === 'passkey' ? await createPasskeyState(encrypted, fallbackPassword) : null;
+        await saveVaultAndPasskeyState(encrypted, passkey);
+        onImported(encrypted, material, passkey, creationMethod === 'passkey' ? fallbackPassword : undefined);
       }
     });
   }
@@ -1534,18 +1856,61 @@ function Modal({ dialog, vault, requestedReceiveAddressCount, onClose, onCreated
   }
 
   const titles = {
-    create: ['Create a local wallet', 'Generate a password-encrypted TensorCash Core/Qt wallet.dat entirely in this browser.'],
-    import: ['Import wallet', 'Open a Qt wallet.dat locally, including password-encrypted Core wallets, or restore a Web Wallet backup.'],
-    unlock: ['Unlock Wallet', 'The password is processed in this browser and is never sent anywhere.'],
-    backup: ['Confirm recovery export', 'Re-enter the local password before exporting the Qt-compatible recovery file.'],
+    create: ['Create a local wallet', creationMethod === 'passkey' ? 'Create with Passkey first. A strong fallback password is generated without keyboard input and shown once after setup.' : 'Create a password-only wallet. Passkey will not be requested or stored.'],
+    import: ['Import wallet', creationMethod === 'passkey' ? 'Import locally, then use Passkey first with a separately generated fallback password.' : 'Import as a password-only browser wallet. Passkey will not be requested or stored.'],
+    unlock: ['Unlock Wallet', passkeyState ? 'Use Passkey, or switch to the original wallet password at any time.' : 'This wallet has no Passkey. Unlock it with its original password.'],
+    backup: ['Confirm recovery export', passkeyState ? 'Authorize with Passkey, or use the wallet password, before exporting recovery data.' : 'Re-enter the original wallet password before exporting recovery data.'],
   } as const;
-  const actionLabel = dialog === 'backup' ? 'Verify and download' : dialog === 'unlock' ? 'Unlock Wallet' : dialog === 'import' ? 'Encrypt and import' : 'Generate and encrypt wallet';
+  const passkeyIssue = (dialog === 'create' || dialog === 'import') ? passkeyUnavailableReason() : null;
+  const localhostUrl = typeof location !== 'undefined' && (/^(?:127(?:\.\d{1,3}){3})$/.test(location.hostname) || location.hostname.includes(':'))
+    ? (() => { const url = new URL(location.href); url.hostname = 'localhost'; return url.href; })()
+    : null;
+  const passkeyFirst = (dialog === 'unlock' || dialog === 'backup') && Boolean(passkeyState) && authMethod === 'passkey';
+  const actionLabel = passkeyFirst
+    ? (dialog === 'backup' ? 'Continue with Passkey' : 'Unlock with Passkey')
+    : dialog === 'backup' ? 'Verify and download' : dialog === 'unlock' ? 'Unlock Wallet' : dialog === 'import' ? (creationMethod === 'passkey' ? 'Import with Passkey' : 'Import with password') : (creationMethod === 'passkey' ? 'Create wallet with Passkey' : 'Create wallet with password');
   const busyLabel = dialog === 'backup' ? 'Preparing backup…' : dialog === 'unlock' ? 'Unlocking wallet…' : dialog === 'import' ? 'Importing wallet…' : 'Creating wallet…';
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && !fileBusy && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={busy || fileBusy}>×</button><p className="eyebrow">TENSORCASH WALLET</p><h2 id="modal-title">{titles[dialog][0]}</h2><p className="modal-lead">{titles[dialog][1]}</p>{vault && (dialog === 'unlock' || dialog === 'backup') && <div className="password-wallet-identity"><span>Selected wallet</span><strong>{walletLabel(vault)}</strong><code>{short(vault.address, 15, 10)} · {vaultFingerprint(vault)}</code></div>}<form onSubmit={submit} autoComplete="off">{(dialog === 'create' || dialog === 'import') && <label>Wallet name<input value={walletName} onChange={(event) => setWalletName(event.target.value)} maxLength={40} placeholder="e.g. Personal wallet" autoComplete="off" data-1p-ignore="true" data-lpignore="true" required /></label>}{dialog === 'import' && <><input ref={fileRef} type="file" accept=".dat,.bak,.wallet,.json,application/json,application/octet-stream,application/x-sqlite3" hidden onChange={(event) => void readFile(event.target.files?.[0])} /><button className="file-drop" type="button" onClick={() => fileRef.current?.click()} disabled={fileBusy || busy} aria-busy={fileBusy}>{fileBusy ? <><span className="button-spinner dark" aria-hidden="true" /><strong>Inspecting wallet file…</strong><small>Checking encryption and address metadata locally</small></> : <><span>↑</span><strong>{sourceFile?.name ?? 'Choose Qt wallet.dat or backup file'}</strong><small>{qtEncrypted === true ? 'Encrypted Qt wallet detected · password required below' : qtEncrypted === false ? 'Unencrypted Qt wallet detected · processed only in this browser' : 'Qt/Core wallet.dat, encrypted Web backup, or ML-DSA JSON export'}</small></>}</button>{qtPrimaryAddress && <div className="qt-wallet-match"><span>Detected active address</span><strong>{qtPrimaryAddress}</strong></div>}{qtEncrypted && <PasswordField label="Existing Qt wallet password" value={qtPassword} onChange={setQtPassword} />}</>}
-          <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={dialog === 'create' || (dialog === 'import' && !restoringWebVault) ? 12 : 6} />
-          {(dialog === 'create' || dialog === 'import') && <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} minLength={dialog === 'import' && restoringWebVault ? 6 : 12} />}
-          {(dialog === 'create' || (dialog === 'import' && !restoringWebVault)) && <><PasswordStrength password={password} /><p className="password-container-warning">Use a unique password. Qt-compatible wallet.dat exports use Core's less memory-hard KDF, so a long password is essential and should never be reused.</p></>}
-          {error && <p className="form-error">{error}</p>}<button className="button primary wide modal-submit" disabled={busy || fileBusy} aria-busy={busy}>{busy && <span className="button-spinner" aria-hidden="true" />}<span>{busy ? busyLabel : actionLabel}</span></button></form><p className="modal-foot">Wallet files and passwords stay inside this browser. Nothing entered here is sent to the gateway.</p></section></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && !fileBusy && onClose()}>
+    <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button className="modal-close" onClick={onClose} aria-label="Close" disabled={busy || fileBusy}>×</button>
+      <p className="eyebrow">TENSORCASH WALLET</p><h2 id="modal-title">{titles[dialog][0]}</h2><p className="modal-lead">{titles[dialog][1]}</p>
+      {vault && (dialog === 'unlock' || dialog === 'backup') && <div className="password-wallet-identity"><span>Selected wallet</span><strong>{walletLabel(vault)}</strong><code>{short(vault.address, 15, 10)} · {vaultFingerprint(vault)}</code></div>}
+      <form onSubmit={submit} autoComplete="off">
+        {(dialog === 'create' || dialog === 'import') && <label>Wallet name<input value={walletName} onChange={(event) => setWalletName(event.target.value)} maxLength={40} placeholder="e.g. Personal wallet" autoComplete="off" data-1p-ignore="true" data-lpignore="true" required /></label>}
+        {dialog === 'import' && <>
+          <input ref={fileRef} type="file" accept=".dat,.bak,.wallet,.json,application/json,application/octet-stream,application/x-sqlite3" hidden onChange={(event) => void readFile(event.target.files?.[0])} />
+          <button className="file-drop" type="button" onClick={() => fileRef.current?.click()} disabled={fileBusy || busy} aria-busy={fileBusy}>{fileBusy ? <><span className="button-spinner dark" aria-hidden="true" /><strong>Inspecting wallet file…</strong><small>Checking encryption and address metadata locally</small></> : <><span>↑</span><strong>{sourceFile?.name ?? 'Choose Qt wallet.dat or backup file'}</strong><small>{qtEncrypted === true ? 'Encrypted Qt wallet detected · password required below' : qtEncrypted === false ? 'Unencrypted Qt wallet detected · processed only in this browser' : 'Qt/Core wallet.dat, encrypted Web backup, or ML-DSA JSON export'}</small></>}</button>
+          {qtPrimaryAddress && <div className="qt-wallet-match"><span>Detected active address</span><strong>{qtPrimaryAddress}</strong></div>}
+          {qtEncrypted && <PasswordField label="Existing Qt wallet password" value={qtPassword} onChange={setQtPassword} />}
+          {restoringWebVault && <PasswordField label="Existing Web backup password" value={webBackupPassword} onChange={setWebBackupPassword} minLength={6} />}
+        </>}
+        {(dialog === 'create' || dialog === 'import') ? <>
+          {creationMethod === 'passkey' ? <>
+            <div className={`passkey-enrollment-note${passkeyIssue ? ' unavailable' : ''}`}><strong>{passkeyIssue ? 'Passkey is unavailable on this address' : dialog === 'import' ? 'No new wallet password required' : 'No password typing required'}</strong><span>{passkeyIssue ?? (dialog === 'import' ? 'The imported browser wallet gets a generated fallback password. An encrypted source file still requires its existing password so it can be opened locally.' : 'Your system Passkey prompt opens next. After it succeeds, the wallet shows a generated fallback password once for offline recovery.')}</span>{localhostUrl && <><a className="localhost-passkey-link" href={localhostUrl}>Open this build on localhost</a><small className="localhost-origin-warning">localhost uses separate browser storage; wallets saved under 127.0.0.1 are not copied there.</small></>}</div>
+            <button className="custom-fallback-toggle" type="button" onClick={() => { setCreationMethod('password'); setPassword(''); setConfirm(''); setError(''); }}>Use password instead</button>
+          </> : <>
+            <div className="password-only-enrollment-note"><strong>Password-only mode</strong><span>No Passkey prompt will appear. This wallet will unlock with the password you set below.</span></div>
+            <button className="custom-fallback-toggle" type="button" onClick={() => { setCreationMethod('passkey'); setPassword(''); setConfirm(''); setError(''); }}>Use Passkey instead</button>
+            <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={12} />
+            <PasswordField label="Confirm wallet password" value={confirm} onChange={setConfirm} minLength={12} />
+            <PasswordStrength password={password} />
+            <p className="password-container-warning">This password is the only local unlock method until you explicitly add Passkey from Settings. Keep it separate from the wallet backup.</p>
+          </>}
+        </> : passkeyState && authMethod === 'passkey' ? <PasskeyAuthorization
+          title={dialog === 'backup' ? 'Authorize recovery export with Passkey' : 'Unlock with Passkey'}
+          detail="If your Passkey cannot be used, switch to the original wallet password."
+          disabled={busy}
+          onUsePassword={() => { setAuthMethod('password'); setError(''); }}
+        /> : <>
+          <PasswordField label="Wallet password" value={password} onChange={setPassword} minLength={6} />
+          {passkeyState && <button className="auth-method-switch" type="button" disabled={busy} onClick={() => { setAuthMethod('passkey'); setPassword(''); setError(''); }}>Use Passkey instead</button>}
+        </>}
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <button className="button primary wide modal-submit" disabled={busy || fileBusy || Boolean(passkeyIssue && creationMethod === 'passkey')} aria-busy={busy}>{busy && <span className="button-spinner" aria-hidden="true" />}<span>{busy ? busyLabel : actionLabel}</span></button>
+      </form>
+      <p className="modal-foot">Wallet files, passwords and Passkey unlock data stay on this device. Nothing entered here is sent to the gateway.</p>
+    </section>
+  </div>;
 }
 
 function downloadBackup(vault: EncryptedVault) {
@@ -1588,10 +1953,17 @@ export default function App() {
   const [derivingAddress, setDerivingAddress] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const [switchingWallet, setSwitchingWallet] = useState(false);
-  const [backupState, setBackupState] = useState<WalletBackupState | null>(null);
+  const [backupStates, setBackupStates] = useState<Record<string, WalletBackupState | null>>({});
+  const [passkeyStates, setPasskeyStates] = useState<Record<string, WalletPasskeyState | null>>({});
+  const [passkeyStatesLoaded, setPasskeyStatesLoaded] = useState(false);
+  const [passkeyRecommendationSeen, setPasskeyRecommendationSeen] = useState(() => {
+    try { return localStorage.getItem(PASSKEY_RECOMMENDATION_SEEN_KEY) === '1'; } catch { return false; }
+  });
   const [receiveMonitor, setReceiveMonitor] = useState<string | null>(null);
   const [sendMonitor, setSendMonitor] = useState<{ transaction: AddressTransaction; addresses: string[] } | null>(null);
   const [deleteWalletOpen, setDeleteWalletOpen] = useState(false);
+  const [walletSecurityRequest, setWalletSecurityRequest] = useState<{ walletId: string; tab: 'password' | 'passkey' } | null>(null);
+  const [generatedFallbackNotice, setGeneratedFallbackNotice] = useState<GeneratedFallbackNotice | null>(null);
   const [market, setMarket] = useState<MarketSnapshot | null>(null);
   const [currencies, setCurrencies] = useState<CurrencySnapshot | null>(null);
   const [displayCurrency, setDisplayCurrency] = useState(() => getDisplayCurrency());
@@ -1649,12 +2021,28 @@ export default function App() {
     loadVault().then(async (loaded) => {
       const inventory = await loadVaultInventory();
       setWallets(inventory.wallets);
+      const backupEntries = await Promise.all(inventory.wallets.map(async (wallet) => {
+        try {
+          return [wallet.walletId, await loadBackupState(wallet.walletId)] as const;
+        } catch {
+          return [wallet.walletId, null] as const;
+        }
+      }));
+      setBackupStates(Object.fromEntries(backupEntries));
+      const passkeyEntries = await Promise.all(inventory.wallets.map(async (wallet) => {
+        try {
+          return [wallet.walletId, await loadPasskeyState(wallet.walletId)] as const;
+        } catch {
+          return [wallet.walletId, null] as const;
+        }
+      }));
+      setPasskeyStates(Object.fromEntries(passkeyEntries));
+      setPasskeyStatesLoaded(true);
       if (inventory.invalidRecordCount) {
         setStorageWarning(`${inventory.invalidRecordCount} damaged local wallet record${inventory.invalidRecordCount === 1 ? ' was' : 's were'} ignored. Healthy wallets remain available; restore the affected wallet from a trusted backup.`);
       }
       if (!loaded) {
         setVault(null);
-        setBackupState(null);
         return setReceiveAddressCount(null);
       }
       try {
@@ -1672,13 +2060,6 @@ export default function App() {
         // unavailable cache storage and continue with the live gateway.
       }
       setVault(loaded);
-      try {
-        setBackupState(await loadBackupState(loaded.walletId));
-      } catch {
-        // Backup reminders are convenience state only. A failed read must not
-        // prevent the encrypted wallet itself from opening.
-        setBackupState(null);
-      }
       let saved: number | null = null;
       try {
         saved = await loadReceiveAddressCount(loaded.walletId);
@@ -1690,7 +2071,9 @@ export default function App() {
       setReceiveAddressCount(Math.max(1, Math.min(maximum, saved ?? loaded.receiveAddressCount ?? 1)));
     }).catch(() => {
       setVault(null);
-      setBackupState(null);
+      setBackupStates({});
+      setPasskeyStates({});
+      setPasskeyStatesLoaded(true);
       setReceiveAddressCount(null);
     });
   }, []);
@@ -1712,6 +2095,22 @@ export default function App() {
   }, [displayCurrency]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 1800); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => () => window.clearTimeout(receiveMonitorTimer.current), []);
+
+  const localWallets = displayVault && !wallets.some((wallet) => wallet.walletId === displayVault.walletId)
+    ? [displayVault, ...wallets]
+    : wallets;
+  const passwordOnlyWallets = passkeyStatesLoaded
+    ? localWallets.filter((wallet) => !passkeyStates[wallet.walletId])
+    : [];
+  const passkeyRecommendationWallet = displayVault && passwordOnlyWallets.some((wallet) => wallet.walletId === displayVault.walletId)
+    ? displayVault
+    : passwordOnlyWallets[0] ?? null;
+  const showPasskeyRecommendation = Boolean(passkeyRecommendationWallet && !passkeyRecommendationSeen);
+
+  useEffect(() => {
+    if (!showPasskeyRecommendation) return;
+    try { localStorage.setItem(PASSKEY_RECOMMENDATION_SEEN_KEY, '1'); } catch { /* A one-time UI hint must never affect wallet access. */ }
+  }, [showPasskeyRecommendation]);
 
   const closeReceiveMonitor = useCallback(() => setReceiveMonitor(null), []);
   const closeSendMonitor = useCallback(() => setSendMonitor(null), []);
@@ -1741,17 +2140,21 @@ export default function App() {
     setToast('Wallet secured on this device');
     setView('overview');
   }
-  function created(nextVault: EncryptedVault, _nextMaterial: WalletMaterial) {
+  function created(nextVault: EncryptedVault, _nextMaterial: WalletMaterial, passkey: WalletPasskeyState | null, generatedFallback?: string) {
     const state: WalletBackupState = { origin: 'created', backedUp: false };
-    setBackupState(state);
+    setBackupStates((current) => ({ ...current, [nextVault.walletId]: state }));
+    setPasskeyStates((current) => ({ ...current, [nextVault.walletId]: passkey }));
     void saveBackupState(nextVault.walletId, state).catch(() => setToast('Wallet created; backup reminder could not be saved'));
     completed(nextVault);
+    if (generatedFallback) setGeneratedFallbackNotice({ walletName: walletLabel(nextVault), address: nextVault.address, password: generatedFallback, origin: 'created' });
   }
-  function imported(nextVault: EncryptedVault, _nextMaterial: WalletMaterial) {
+  function imported(nextVault: EncryptedVault, _nextMaterial: WalletMaterial, passkey: WalletPasskeyState | null, generatedFallback?: string) {
     const state: WalletBackupState = { origin: 'imported', backedUp: true };
-    setBackupState(state);
+    setBackupStates((current) => ({ ...current, [nextVault.walletId]: state }));
+    setPasskeyStates((current) => ({ ...current, [nextVault.walletId]: passkey }));
     void saveBackupState(nextVault.walletId, state).catch(() => setToast('Wallet imported; local backup status could not be saved'));
     completed(nextVault);
+    if (generatedFallback) setGeneratedFallbackNotice({ walletName: walletLabel(nextVault), address: nextVault.address, password: generatedFallback, origin: 'imported' });
   }
   function unlocked(nextMaterial: WalletMaterial, migratedVault?: EncryptedVault) {
     if (migratedVault) {
@@ -1766,8 +2169,8 @@ export default function App() {
   }
   function backedUp() {
     if (!vault) return;
-    const state: WalletBackupState = { origin: backupState?.origin ?? 'imported', backedUp: true };
-    setBackupState(state);
+    const state: WalletBackupState = { origin: backupStates[vault.walletId]?.origin ?? 'imported', backedUp: true };
+    setBackupStates((current) => ({ ...current, [vault.walletId]: state }));
     void saveBackupState(vault.walletId, state).catch(() => setToast('Backup downloaded; local reminder could not be updated'));
   }
   function copy(value: string) { navigator.clipboard.writeText(value).then(() => setToast('Address copied'), () => setToast('Copy failed')); }
@@ -1802,10 +2205,26 @@ export default function App() {
   }
   async function deleteLocal() {
     if (!vault) return;
-    const next = await removeVault(vault.walletId);
+    const deletedWalletId = vault.walletId;
+    const next = await removeVault(deletedWalletId);
     setVault(next);
     setWallets(await loadVaults());
-    setBackupState(next ? await loadBackupState(next.walletId) : null);
+    setBackupStates((current) => {
+      const updated = { ...current };
+      delete updated[deletedWalletId];
+      return updated;
+    });
+    setPasskeyStates((current) => {
+      const updated = { ...current };
+      delete updated[deletedWalletId];
+      return updated;
+    });
+    if (next) {
+      try {
+        const nextBackupState = await loadBackupState(next.walletId);
+        setBackupStates((current) => ({ ...current, [next.walletId]: nextBackupState }));
+      } catch { /* Optional local reminder state. */ }
+    }
     setReceiveAddressCount(next ? await loadReceiveAddressCount(next.walletId) ?? next.receiveAddressCount ?? 1 : null);
     setSummary(null);
     transactionsRef.current = [];
@@ -1818,8 +2237,9 @@ export default function App() {
     setView('overview');
   }
 
-  async function switchWallet(walletId: string) {
-    if (!vault || walletId === vault.walletId || switchingWallet) return;
+  async function switchWallet(walletId: string): Promise<boolean> {
+    if (!vault || switchingWallet) return false;
+    if (walletId === vault.walletId) return true;
     setSwitchingWallet(true);
     refreshSequence.current += 1;
     setAccountLoading(true);
@@ -1838,20 +2258,54 @@ export default function App() {
       const saved = await loadReceiveAddressCount(next.walletId);
       let nextBackupState: WalletBackupState | null = null;
       try { nextBackupState = await loadBackupState(next.walletId); } catch { /* Optional local reminder state. */ }
+      let nextPasskeyState: WalletPasskeyState | null = null;
+      try { nextPasskeyState = await loadPasskeyState(next.walletId); } catch { /* Password fallback remains available. */ }
       setReceiveAddressCount(saved ?? next.receiveAddressCount ?? 1);
-      setBackupState(nextBackupState);
+      setBackupStates((current) => ({ ...current, [next.walletId]: nextBackupState }));
+      setPasskeyStates((current) => ({ ...current, [next.walletId]: nextPasskeyState }));
       setVault(next);
       setView('overview');
       setToast('Wallet switched');
+      return true;
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'Unable to switch wallet');
       setAccountLoading(false);
+      return false;
     } finally {
       setSwitchingWallet(false);
     }
   }
 
+  async function openBackupFor(walletId: string) {
+    if (!vault) return;
+    if (!(await switchWallet(walletId))) return;
+    setDialog('backup');
+  }
+
+  function dismissPasskeyRecommendation() {
+    try { localStorage.setItem(PASSKEY_RECOMMENDATION_SEEN_KEY, '1'); } catch { /* A one-time UI hint must never affect wallet access. */ }
+    setPasskeyRecommendationSeen(true);
+  }
+
+  function openPasskeySetup(walletId: string) {
+    dismissPasskeyRecommendation();
+    setWalletSecurityRequest({ walletId, tab: 'passkey' });
+  }
+
   if (vault === undefined) return <div className="boot"><Logo /><span /></div>;
+  const backupCandidates = localWallets;
+  const unbackedWallets = backupCandidates.filter((wallet) => {
+    const state = backupStates[wallet.walletId];
+    return state?.origin === 'created' && !state.backedUp;
+  });
+  const backupWarningWallet = displayVault && unbackedWallets.some((wallet) => wallet.walletId === displayVault.walletId)
+    ? displayVault
+    : unbackedWallets[0] ?? null;
+  const activeBackupState = displayVault ? backupStates[displayVault.walletId] ?? null : null;
+  const activePasskeyState = displayVault ? passkeyStates[displayVault.walletId] ?? null : null;
+  const backupRequired = Boolean(backupWarningWallet);
+  const walletAlertCount = Number(backupRequired) + Number(showPasskeyRecommendation);
+  const walletAlertOffsetClass = walletAlertCount === 2 ? ' below-two-wallet-alerts' : walletAlertCount === 1 ? ' below-wallet-alert' : '';
   const staleChain = Boolean(status?.stale || status?.core_available === false);
   const chainNoticeMode = networkError ? 'error' : staleChain ? 'syncing' : status && !status.synced ? 'syncing' : '';
   const chainNotice = networkError
@@ -1870,17 +2324,21 @@ export default function App() {
           {displayVault && <WalletSwitcher wallets={wallets} active={displayVault} switching={switchingWallet} onSwitch={(walletId) => void switchWallet(walletId)} onManage={() => setView('wallets')} />}
           {displayVault && <button className="compact-address" onClick={() => copy(currentReceiveAddress(displayVault, activeReceiveAddressCount))}>{short(currentReceiveAddress(displayVault, activeReceiveAddressCount))} <span>⧉</span></button>}
           <a className="github-link" href={SOURCE_URL} target="_blank" rel="noreferrer" aria-label="Open TensorCash Wallet on GitHub" title="GitHub"><GithubIcon /></a>
-          <a className="security-link" href={VERIFY_URL} target="_blank" rel="noreferrer" aria-label="Verify the hosted wallet build" title="Verify hosted wallet"><SecurityIcon /></a>
+          <SecurityCheckLink />
         </div>
       </header>
-      <div className={`chain-notice ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
-      {storageWarning && <div className="storage-warning" role="alert"><strong>Local storage recovery notice</strong><span>{storageWarning}</span><button type="button" onClick={() => setStorageWarning('')} aria-label="Dismiss storage warning">×</button></div>}
-      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} receiveAddressCount={activeReceiveAddressCount} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={backupState?.origin === 'created' && !backupState.backedUp} market={market} currencies={currencies} displayCurrency={displayCurrency} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
+      {walletAlertCount > 0 && <div className="wallet-alert-stack">
+        {backupWarningWallet && displayVault && <RecoveryBackupWarning vault={backupWarningWallet} additionalCount={Math.max(0, unbackedWallets.length - 1)} active={backupWarningWallet.walletId === displayVault.walletId} onBackup={() => void openBackupFor(backupWarningWallet.walletId)} />}
+        {showPasskeyRecommendation && passkeyRecommendationWallet && <PasskeyRecommendation vault={passkeyRecommendationWallet} additionalCount={Math.max(0, passwordOnlyWallets.length - 1)} onSetup={() => openPasskeySetup(passkeyRecommendationWallet.walletId)} onDismiss={dismissPasskeyRecommendation} />}
+      </div>}
+      <div className={`chain-notice${walletAlertOffsetClass} ${chainNoticeMode ? `is-visible ${chainNoticeMode}` : ''}`} role="status" aria-live="polite" aria-hidden={!chainNoticeMode}><i /> <span>{chainNotice}</span>{networkError && <button onClick={() => void refresh()}>Retry</button>}</div>
+      {storageWarning && <div className={`storage-warning${walletAlertOffsetClass}`} role="alert"><strong>Local storage recovery notice</strong><span>{storageWarning}</span><button type="button" onClick={() => setStorageWarning('')} aria-label="Dismiss storage warning">×</button></div>}
+      {!displayVault ? <EmptyHome onCreate={() => setDialog('create')} onImport={() => setDialog('import')} /> : <main className="wallet-layout"><div className="wallet-content"><Overview vault={displayVault} receiveAddressCount={activeReceiveAddressCount} summary={summary} status={status} transactions={transactions} fundedAddresses={fundedAddresses} loading={accountLoading} showBackup={activeBackupState?.origin === 'created' && !activeBackupState.backedUp} market={market} currencies={currencies} displayCurrency={displayCurrency} onCopy={copy} onBackup={() => setDialog('backup')} onReceive={() => setView('receive')} onView={setView} /></div></main>}
       {displayVault && view !== 'overview' && <ToolDrawer key={view} title={title} onClose={() => setView('overview')}>
         {view === 'receive' && <ReceivePanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} onCopy={copy} onGenerate={generateReceiveAddress} onSelect={openReceiveMonitor} generating={derivingAddress} />}
         {view === 'activity' && <Activity transactions={transactions} address={currentReceiveAddress(displayVault, activeReceiveAddressCount)} />}
         {view === 'addresses' && <AddressBalancesPanel vault={displayVault} receiveAddressCount={activeReceiveAddressCount} addresses={fundedAddresses} onCopy={copy} />}
-        {view === 'send' && vault && <SendPanel vault={vault} wallets={wallets} receiveAddressCount={activeReceiveAddressCount} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
+        {view === 'send' && vault && <SendPanel vault={vault} wallets={wallets} passkeyState={activePasskeyState} receiveAddressCount={activeReceiveAddressCount} fundedAddresses={fundedAddresses} onVaultUpdated={(updatedVault) => {
           setVault(updatedVault);
           setWallets((current) => current.map((item) => item.walletId === updatedVault.walletId ? updatedVault : item));
         }} onSent={async (pendingTransaction, sentWalletAddresses) => {
@@ -1906,13 +2364,19 @@ export default function App() {
           });
           window.setTimeout(() => void refresh(), 350);
         }} />}
-        {view === 'settings' && vault && <div className="settings-drawer enter"><div className="settings-intro"><span>Wallet settings</span><p>Recovery, market display, network access and this device's encrypted wallet storage.</p></div><RecoveryPanel onBackup={() => setDialog('backup')} /><SettingsPanel currency={displayCurrency} currencies={currencies} onCurrencyChange={(currency) => setDisplayCurrency(saveDisplayCurrency(currency))} onSaved={refresh} onDelete={() => setDeleteWalletOpen(true)} /></div>}
+        {view === 'settings' && vault && <div className="settings-drawer enter"><div className="settings-intro"><span>Wallet settings</span><p>Wallet access, recovery, market display, network access and this device's encrypted wallet storage.</p></div><WalletSecurityPanel passkeyState={activePasskeyState} onManage={() => setWalletSecurityRequest({ walletId: displayVault.walletId, tab: 'password' })} /><RecoveryPanel onBackup={() => setDialog('backup')} /><SettingsPanel currency={displayCurrency} currencies={currencies} onCurrencyChange={(currency) => setDisplayCurrency(saveDisplayCurrency(currency))} onSaved={refresh} onDelete={() => setDeleteWalletOpen(true)} /></div>}
         {view === 'wallets' && <WalletsPanel wallets={wallets} activeId={displayVault.walletId} switching={switchingWallet} onSwitch={(walletId) => void switchWallet(walletId)} onCreate={() => setDialog('create')} onImport={() => setDialog('import')} />}
       </ToolDrawer>}
       {receiveMonitor && <ReceiveWatchModal address={receiveMonitor} onClose={closeReceiveMonitor} onCopy={copy} />}
       {sendMonitor && <SendWatchModal transaction={sendMonitor.transaction} addresses={sendMonitor.addresses} onClose={closeSendMonitor} />}
       {deleteWalletOpen && displayVault && <DeleteWalletModal wallet={displayVault} onClose={() => setDeleteWalletOpen(false)} onConfirm={deleteLocal} />}
-      {dialog && <Modal dialog={dialog} vault={vault ?? null} requestedReceiveAddressCount={activeReceiveAddressCount} onClose={() => setDialog(null)} onCreated={created} onImported={imported} onUnlocked={unlocked} onBackedUp={backedUp} />}
+      {walletSecurityRequest && displayVault && <WalletSecurityModal wallets={backupCandidates} initialWalletId={walletSecurityRequest.walletId} initialTab={walletSecurityRequest.tab} passkeyStates={passkeyStates} onClose={() => setWalletSecurityRequest(null)} onChanged={(updatedVault, updatedPasskey) => {
+        setVault((current) => current?.walletId === updatedVault.walletId ? updatedVault : current);
+        setWallets((current) => current.map((item) => item.walletId === updatedVault.walletId ? updatedVault : item));
+        setPasskeyStates((current) => ({ ...current, [updatedVault.walletId]: updatedPasskey }));
+      }} />}
+      {dialog && <Modal dialog={dialog} vault={vault ?? null} passkeyState={activePasskeyState} requestedReceiveAddressCount={activeReceiveAddressCount} onClose={() => setDialog(null)} onCreated={created} onImported={imported} onUnlocked={unlocked} onBackedUp={backedUp} />}
+      {generatedFallbackNotice && <GeneratedFallbackModal notice={generatedFallbackNotice} onDone={() => setGeneratedFallbackNotice(null)} />}
       {toast && <div className="toast">✓ {toast}</div>}
       <footer><span>TensorCash Wallet · Non-custodial by design</span><span>The gateway stores no wallet data · <b className="app-version">v{APP_VERSION}</b></span></footer>
     </div>

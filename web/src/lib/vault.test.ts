@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { wipe } from './bytes';
+import { bytesToBase64, wipe } from './bytes';
+import { wrapPasswordWithPrfKey } from './passkey';
 import { decryptWallet, encryptWallet, validateVault } from './vault';
 import type { MLDSAWalletMaterial } from './types';
 
@@ -50,6 +51,19 @@ describe('encrypted wallet vault', () => {
       iterations: 2,
       allowLegacyPassword: true,
     });
+    const originalVault = JSON.stringify(vault);
+    const optionalPasskeyState = await wrapPasswordWithPrfKey({
+      schema: 'org.tensorcash.webwallet.passkey',
+      version: 1,
+      walletId: vault.walletId,
+      credentialId: 'AQIDBAUGBwg',
+      rpId: 'wallet.example',
+      prfSalt: bytesToBase64(new Uint8Array(32).fill(0x31)),
+      cipher: { name: 'AES-256-GCM', iv: bytesToBase64(new Uint8Array(12).fill(0x32)) },
+      createdAt: '2026-08-21T00:00:00.000Z',
+    }, '123456', new Uint8Array(32).fill(0x33));
+    expect(optionalPasskeyState.walletId).toBe(vault.walletId);
+    expect(JSON.stringify(vault)).toBe(originalVault);
     expect((await decryptWallet(vault, '123456')).walletId).toBe(material().walletId);
     await expect(encryptWallet(material(), '12345678901', {
       memoryKiB: 32_768,

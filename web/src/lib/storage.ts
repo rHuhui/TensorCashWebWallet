@@ -1,4 +1,5 @@
 import type { AddressSummary, AddressTransaction, ChainStatus, EncryptedVault, WalletAddressBalance } from './types';
+import { validatePasskeyState, type WalletPasskeyState } from './passkey';
 import { validateVault } from './vault';
 
 const DATABASE = 'tensorcash-wallet';
@@ -10,6 +11,7 @@ const WALLET_PREFIX = 'wallet:';
 const RECEIVE_PREFIX = 'receive-state:';
 const BACKUP_PREFIX = 'backup-state:';
 const ACCOUNT_CACHE_PREFIX = 'account-cache:';
+const PASSKEY_PREFIX = 'passkey-state:';
 
 export interface WalletBackupState {
   origin: 'created' | 'imported';
@@ -34,6 +36,7 @@ function walletKey(walletId: string): string { return `${WALLET_PREFIX}${walletI
 function receiveKey(walletId: string): string { return `${RECEIVE_PREFIX}${walletId}`; }
 function backupKey(walletId: string): string { return `${BACKUP_PREFIX}${walletId}`; }
 function accountCacheKey(walletId: string): string { return `${ACCOUNT_CACHE_PREFIX}${walletId}`; }
+function passkeyKey(walletId: string): string { return `${PASSKEY_PREFIX}${walletId}`; }
 
 export function filterStoredVaultRecords(keys: readonly IDBValidKey[], values: readonly unknown[]): VaultInventory {
   const wallets: EncryptedVault[] = [];
@@ -200,6 +203,72 @@ export async function saveVault(vault: EncryptedVault): Promise<void> {
   }
 }
 
+export async function loadPasskeyState(walletId: string): Promise<WalletPasskeyState | null> {
+  const database = await openDatabase();
+  try {
+    const value = await requestValue(
+      database.transaction(STORE, 'readonly').objectStore(STORE).get(passkeyKey(walletId)),
+      'Unable to read local Passkey data',
+    );
+    if (value === undefined) return null;
+    try {
+      validatePasskeyState(value);
+      return value.walletId === walletId ? value : null;
+    } catch {
+      // Passkey state is optional. A damaged or unsupported record must never
+      // hide the original password unlock path.
+      return null;
+    }
+  } finally {
+    database.close();
+  }
+}
+
+export async function savePasskeyState(state: WalletPasskeyState): Promise<void> {
+  validatePasskeyState(state);
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE, 'readwrite');
+      transaction.objectStore(STORE).put(state, passkeyKey(state.walletId));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(new Error('Unable to save local Passkey data'));
+      transaction.onabort = () => reject(new Error('Passkey save was aborted'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Save a password-encrypted vault and its optional Passkey wrapper in one
+ * IndexedDB transaction. `null` deliberately removes Passkey without changing
+ * the vault's password compatibility.
+ */
+export async function saveVaultAndPasskeyState(vault: EncryptedVault, state: WalletPasskeyState | null): Promise<void> {
+  validateVault(vault);
+  if (state) {
+    validatePasskeyState(state);
+    if (state.walletId !== vault.walletId) throw new Error('Passkey does not belong to this wallet');
+  }
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE, 'readwrite');
+      const store = transaction.objectStore(STORE);
+      store.put(vault, walletKey(vault.walletId));
+      store.put(vault.walletId, ACTIVE_WALLET_KEY);
+      if (state) store.put(state, passkeyKey(vault.walletId));
+      else store.delete(passkeyKey(vault.walletId));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(new Error('Unable to save wallet security settings'));
+      transaction.onabort = () => reject(new Error('Wallet security update was aborted'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
 export async function activateVault(walletId: string): Promise<EncryptedVault> {
   const database = await openDatabase();
   try {
@@ -352,6 +421,7 @@ export async function removeVault(walletId: string): Promise<EncryptedVault | nu
       store.delete(receiveKey(walletId));
       store.delete(backupKey(walletId));
       store.delete(accountCacheKey(walletId));
+      store.delete(passkeyKey(walletId));
       if (next) store.put(next.walletId, ACTIVE_WALLET_KEY);
       else store.delete(ACTIVE_WALLET_KEY);
       transaction.oncomplete = () => resolve();
